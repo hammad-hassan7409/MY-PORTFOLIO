@@ -66,12 +66,13 @@ export const Header: React.FC = () => {
               <div className="text-left">
                 <span className="font-semibold text-base tracking-tight text-[#f0f6fc] flex items-center gap-1.5">
                   {profile?.name || "Hammad Hassan"}
-                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-[#238636]/20 text-[#3fb950] border border-[#238636]/40 font-mono hidden sm:inline-block">
-                    PRO
+                  <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-mono font-semibold hidden sm:inline-flex items-center gap-1">
+                    <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                    PREMIUM
                   </span>
                 </span>
-                <p className="text-xs text-[#8b949e] font-mono leading-none hidden md:block">
-                  @{profile?.username || "hammadhassan"}
+                <p className="text-xs text-[#8b949e] font-mono leading-none hidden md:block mt-0.5">
+                  MY PORTFOLIO • @{profile?.username || "hammadhassan"}
                 </p>
               </div>
             </button>
