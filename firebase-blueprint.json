@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Portfolio project item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "displayName": { "type": "string" },
+        "description": { "type": "string" },
+        "longDescription": { "type": "string" },
+        "primaryLanguage": { "type": "string" },
+        "primaryLanguageColor": { "type": "string" },
+        "technologies": { "type": "array" },
+        "imageUrl": { "type": "string" },
+        "gallery": { "type": "array" },
+        "status": { "type": "string" },
+        "isPinned": { "type": "boolean" },
+        "isFeatured": { "type": "boolean" },
+        "order": { "type": "number" },
+        "stars": { "type": "number" },
+        "forks": { "type": "number" },
+        "liveUrl": { "type": "string" },
+        "githubUrl": { "type": "string" },
+        "highlights": { "type": "array" },
+        "architecture": { "type": "array" },
+        "updatedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "displayName"]
+    },
+    "Profile": {
+      "title": "Profile",
+      "description": "Developer profile information",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "title": { "type": "string" },
+        "bio": { "type": "string" },
+        "detailedBio": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "email": { "type": "string" }
+      }
+    },
+    "Skill": {
+      "title": "Skill",
+      "description": "Technical skill entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "level": { "type": "string" }
+      }
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Activity event log for contributions and streak tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "date": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "required": ["id", "type", "title", "timestamp", "date"]
+    },
+    "ContributionSummary": {
+      "title": "ContributionSummary",
+      "description": "Contribution summary and streak state",
+      "type": "object",
+      "properties": {
+        "total": { "type": "number" },
+        "currentStreak": { "type": "number" },
+        "longestStreak": { "type": "number" },
+        "commitsCount": { "type": "number" },
+        "pullRequestsCount": { "type": "number" },
+        "reviewsCount": { "type": "number" },
+        "year": { "type": "number" },
+        "lastUpdated": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Collection of individual portfolio projects"
+    },
+    "/profile/{profileId}": {
+      "schema": "Profile",
+      "description": "Developer profile documents"
+    },
+    "/skills/{skillId}": {
+      "schema": "Skill",
+      "description": "Technical skills documents"
+    },
+    "/activities/{activityId}": {
+      "schema": "ActivityLog",
+      "description": "Activity event logs tracking portfolio operations and code activity"
+    },
+    "/contributions/{documentId}": {
+      "schema": "ContributionSummary",
+      "description": "Aggregated contribution metrics and streak states"
+    },
+    "/portfolio/{document}": {
+      "schema": "Project",
+      "description": "Aggregated portfolio store documents"
+    }
+  }
+}
