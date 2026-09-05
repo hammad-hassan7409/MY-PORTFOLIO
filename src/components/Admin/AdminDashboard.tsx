@@ -281,8 +281,8 @@ export const AdminDashboard: React.FC = () => {
 
     try {
       setIsUploadingAvatar(true);
-      // Optimize image to crisp 800x800 avatar
-      const optimizedDataUrl = await optimizeImage(file, 800, 800, 0.9);
+      // Optimize image to crisp 400x400 avatar
+      const optimizedDataUrl = await optimizeImage(file, 400, 400, 0.8);
       setProfileForm((prev) => ({
         ...prev,
         avatarUrl: optimizedDataUrl,
@@ -309,12 +309,12 @@ export const AdminDashboard: React.FC = () => {
 
     try {
       setIsUploadingProjectImage(true);
-      // Optimize project image for web preview
-      const optimizedDataUrl = await optimizeImage(file, 1400, 900, 0.85);
+      // Optimize project image to crisp, compact web preview size
+      const optimizedDataUrl = await optimizeImage(file, 1000, 650, 0.75);
       setProjectForm((prev) => ({
         ...prev,
         imageUrl: optimizedDataUrl,
-        gallery: [optimizedDataUrl, ...(prev.gallery || []).slice(0, 3)],
+        gallery: [optimizedDataUrl],
       }));
       showToast("Project preview image uploaded from device!", "info");
     } catch (err) {

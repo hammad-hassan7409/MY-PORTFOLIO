@@ -31,6 +31,32 @@ const LOCAL_PROFILE_KEY = "portfolio_persisted_profile";
 const LOCAL_ACTIVITIES_KEY = "portfolio_persisted_activities";
 
 /**
+ * Recursively cleans data for Firestore:
+ * - Removes undefined values (which crash setDoc in Firestore)
+ * - Converts invalid values into safe primitives
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as any;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as any;
+  }
+  if (typeof data === "object") {
+    const cleaned: any = {};
+    for (const [key, val] of Object.entries(data as Record<string, any>)) {
+      if (val !== undefined) {
+        cleaned[key] = sanitizeForFirestore(val);
+      }
+    }
+    return cleaned;
+  }
+  return data;
+}
+
+/**
  * =========================================================================
  * PROJECTS PERSISTENCE
  * =========================================================================
@@ -40,21 +66,50 @@ const LOCAL_ACTIVITIES_KEY = "portfolio_persisted_activities";
  * Save a single project to Firestore database (permanent cloud persistence)
  */
 export async function saveProjectToCloud(project: Project): Promise<boolean> {
+  if (!project || !project.id) {
+    console.error("saveProjectToCloud error: Invalid project or missing ID", project);
+    return false;
+  }
+
   try {
     const docRef = doc(db, PROJECTS_COLLECTION, project.id);
-    await setDoc(docRef, {
+
+    // Ensure gallery doesn't hold redundant duplicates of the primary image
+    let sanitizedGallery = Array.isArray(project.gallery) ? [...project.gallery] : [];
+    if (project.imageUrl && sanitizedGallery.length === 0) {
+      sanitizedGallery = [project.imageUrl];
+    }
+    const seen = new Set<string>();
+    sanitizedGallery = sanitizedGallery.filter((url) => {
+      if (!url || seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    }).slice(0, 4);
+
+    const projectDataToSave = sanitizeForFirestore({
       ...project,
+      gallery: sanitizedGallery,
       updatedAt: project.updatedAt || new Date().toISOString(),
-    }, { merge: true });
+      isPinned: Boolean(project.isPinned),
+      isFeatured: Boolean(project.isFeatured),
+      order: typeof project.order === "number" ? project.order : 0,
+      stars: Number(project.stars) || 0,
+      forks: Number(project.forks) || 0,
+      technologies: Array.isArray(project.technologies) ? project.technologies : [],
+      highlights: Array.isArray(project.highlights) ? project.highlights : [],
+      architecture: Array.isArray(project.architecture) ? project.architecture : [],
+    });
+
+    await setDoc(docRef, projectDataToSave, { merge: true });
 
     // Cache locally as immediate fallback
     try {
       const cached = getLocalCachedProjects();
       const idx = cached.findIndex((p) => p.id === project.id);
       if (idx >= 0) {
-        cached[idx] = project;
+        cached[idx] = { ...project, gallery: sanitizedGallery };
       } else {
-        cached.push(project);
+        cached.push({ ...project, gallery: sanitizedGallery });
       }
       saveLocalCachedProjects(cached);
     } catch {
@@ -192,7 +247,7 @@ export function saveLocalCachedProjects(projects: Project[]): void {
 export async function saveProfileToCloud(profile: Profile): Promise<boolean> {
   try {
     const docRef = doc(db, PROFILE_COLLECTION, PROFILE_DOC_ID);
-    await setDoc(docRef, profile, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(profile), { merge: true });
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(profile));
@@ -237,7 +292,7 @@ export async function loadProfileFromCloud(): Promise<Profile | null> {
 export async function saveSkillToCloud(skill: Skill): Promise<boolean> {
   try {
     const docRef = doc(db, SKILLS_COLLECTION, skill.id);
-    await setDoc(docRef, skill, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(skill), { merge: true });
     return true;
   } catch (err) {
     console.warn("Failed to save skill to Firestore:", err);
@@ -274,7 +329,7 @@ export async function loadSkillsFromCloud(): Promise<Skill[] | null> {
 export async function saveAchievementToCloud(ach: Achievement): Promise<boolean> {
   try {
     const docRef = doc(db, ACHIEVEMENTS_COLLECTION, ach.id);
-    await setDoc(docRef, ach, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(ach), { merge: true });
     return true;
   } catch (err) {
     console.warn("Failed to save achievement to Firestore:", err);
@@ -311,7 +366,7 @@ export async function loadAchievementsFromCloud(): Promise<Achievement[] | null>
 export async function saveExperienceToCloud(exp: Experience): Promise<boolean> {
   try {
     const docRef = doc(db, EXPERIENCES_COLLECTION, exp.id);
-    await setDoc(docRef, exp, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(exp), { merge: true });
     return true;
   } catch (err) {
     console.warn("Failed to save experience to Firestore:", err);
@@ -347,7 +402,7 @@ export async function loadExperiencesFromCloud(): Promise<Experience[] | null> {
 export async function saveMessageToCloud(msg: Message): Promise<boolean> {
   try {
     const docRef = doc(db, MESSAGES_COLLECTION, msg.id);
-    await setDoc(docRef, msg, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(msg), { merge: true });
     return true;
   } catch (err) {
     console.warn("Failed to save message to Firestore:", err);
@@ -414,7 +469,7 @@ export function saveLocalCachedActivities(activities: ActivityLog[]): void {
 export async function saveActivityToCloud(activity: ActivityLog): Promise<boolean> {
   try {
     const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
-    await setDoc(docRef, activity, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(activity), { merge: true });
 
     // Update local cache
     const cached = getLocalCachedActivities();
@@ -485,10 +540,10 @@ export function subscribeToCloudActivities(callback: (activities: ActivityLog[])
 export async function saveContributionSummaryToCloud(summary: Partial<ContributionData>): Promise<boolean> {
   try {
     const docRef = doc(db, CONTRIBUTIONS_COLLECTION, CONTRIBUTIONS_DOC_ID);
-    await setDoc(docRef, {
+    await setDoc(docRef, sanitizeForFirestore({
       ...summary,
       lastUpdated: new Date().toISOString(),
-    }, { merge: true });
+    }), { merge: true });
     return true;
   } catch (err) {
     console.warn("Firestore contribution summary save failed:", err);
@@ -532,7 +587,7 @@ export async function savePortfolioToCloud(data: PortfolioData): Promise<boolean
   try {
     const docRef = doc(db, PORTFOLIO_DOC_PATH, PORTFOLIO_DOC_ID);
     // Strip large images from monolithic backup doc to prevent 1MB limit crash
-    const sanitizedData = {
+    const sanitizedData = sanitizeForFirestore({
       ...data,
       projects: (data.projects || []).map((p) => ({
         ...p,
@@ -540,7 +595,7 @@ export async function savePortfolioToCloud(data: PortfolioData): Promise<boolean
         gallery: (p.gallery || []).map((g) => (g && g.startsWith("data:") ? g.substring(0, 100) + "...[stored in projects collection]" : g)),
       })),
       _syncedAt: new Date().toISOString(),
-    };
+    });
     await setDoc(docRef, sanitizedData, { merge: true });
     return true;
   } catch (err) {

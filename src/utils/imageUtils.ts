@@ -15,9 +15,9 @@ export async function readFileAsDataURL(file: File): Promise<string> {
  */
 export async function optimizeImage(
   file: File,
-  maxWidth: number = 800,
-  maxHeight: number = 800,
-  quality: number = 0.85
+  maxWidth: number = 1000,
+  maxHeight: number = 650,
+  quality: number = 0.75
 ): Promise<string> {
   const dataUrl = await readFileAsDataURL(file);
 

@@ -600,11 +600,18 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   // Update Profile
   const updateProfile = async (updated: Partial<Profile>) => {
-    if (!adminToken || !profile) return false;
+    if (!adminToken || !profile) {
+      showToast("Authentication required. Please log in as admin.", "error");
+      return false;
+    }
     const mergedProfile = { ...profile, ...updated };
     try {
-      // 1. Save directly to Firestore database
-      await saveProfileToCloud(mergedProfile);
+      // 1. Save directly to Firestore database and verify confirmation
+      const cloudSuccess = await saveProfileToCloud(mergedProfile);
+      if (!cloudSuccess) {
+        showToast("Database error: Profile changes could not be saved to the database.", "error");
+        return false;
+      }
 
       // 2. Update server if available
       safeFetchJson("/api/profile", {
@@ -621,11 +628,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "profile_updated",
         title: "Updated developer profile & bio settings",
       });
-      showToast("Profile updated successfully!");
+      showToast("Profile updated and saved to database successfully!", "success");
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to update profile:", err);
-      showToast("Failed to update profile", "error");
+      showToast(`Failed to update profile: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -635,7 +642,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
   // ==========================================
 
   const createProject = async (proj: Partial<Project>) => {
-    if (!adminToken) return false;
+    if (!adminToken) {
+      showToast("Authentication required. Please log in as admin.", "error");
+      return false;
+    }
     try {
       const newId = proj.id || "proj-" + Date.now();
       const newProject: Project = {
@@ -651,6 +661,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         gallery: Array.isArray(proj.gallery) && proj.gallery.length > 0 ? proj.gallery : [proj.imageUrl || "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1200&auto=format&fit=crop&q=80"],
         status: proj.status || "Live",
         isPinned: Boolean(proj.isPinned),
+        isFeatured: Boolean((proj as any).isFeatured),
         order: typeof proj.order === "number" ? proj.order : projects.length + 1,
         stars: Number(proj.stars) || 0,
         forks: Number(proj.forks) || 0,
@@ -658,14 +669,19 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         githubUrl: proj.githubUrl || "https://github.com/hammadhassan",
         highlights: Array.isArray(proj.highlights) ? proj.highlights : [],
         architecture: Array.isArray(proj.architecture) ? proj.architecture : [],
-        updatedAt: "Just now",
+        updatedAt: new Date().toISOString(),
         createdAt: proj.createdAt || new Date().toISOString().split("T")[0],
       };
 
-      // 1. Save directly into Firestore database
-      await saveProjectToCloud(newProject);
+      // 1. MUST verify successful write into Firestore database FIRST
+      const cloudSuccess = await saveProjectToCloud(newProject);
+      if (!cloudSuccess) {
+        console.error("Firestore database rejected project write:", newProject.id);
+        showToast("Database error: Could not save project to database. Changes were NOT committed.", "error");
+        return false;
+      }
 
-      // 2. Also send to server API
+      // 2. Also persist to server backend
       try {
         await fetch("/api/projects", {
           method: "POST",
@@ -679,7 +695,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. Update React local state immediately
+      // 3. ONLY update local state after confirmed database write
       setProjects((prev) => {
         const existingIdx = prev.findIndex((p) => p.id === newProject.id);
         if (existingIdx >= 0) {
@@ -699,30 +715,41 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         metadata: { projectId: newProject.id },
       });
 
-      showToast("Project created and saved permanently!");
+      showToast("Project created and saved to database successfully!", "success");
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to create project:", err);
-      showToast("Failed to create project", "error");
+      showToast(`Failed to create project: ${err?.message || "Database error"}`, "error");
+      return false;
     }
-    return false;
   };
 
   const updateProject = async (id: string, proj: Partial<Project>) => {
-    if (!adminToken) return false;
+    if (!adminToken) {
+      showToast("Authentication required. Please log in as admin.", "error");
+      return false;
+    }
     try {
       const existing = projects.find((p) => p.id === id);
-      if (!existing) return false;
+      if (!existing) {
+        showToast("Project not found to update.", "error");
+        return false;
+      }
 
       const updatedProject: Project = {
         ...existing,
         ...proj,
         id,
-        updatedAt: "Just now",
+        updatedAt: new Date().toISOString(),
       };
 
-      // 1. Update in Firestore database
-      await saveProjectToCloud(updatedProject);
+      // 1. MUST verify update in Firestore database FIRST
+      const cloudSuccess = await saveProjectToCloud(updatedProject);
+      if (!cloudSuccess) {
+        console.error("Firestore database rejected project update:", id);
+        showToast("Database error: Could not update project in database. Changes were NOT committed.", "error");
+        return false;
+      }
 
       // 2. Update in server backend
       try {
@@ -738,7 +765,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. Update local state
+      // 3. ONLY update local state after confirmed database write
       setProjects((prev) => prev.map((p) => (p.id === id ? updatedProject : p)));
       if (selectedProject?.id === id) {
         setSelectedProject(updatedProject);
@@ -753,21 +780,29 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         metadata: { projectId: updatedProject.id },
       });
 
-      showToast("Project updated successfully!");
+      showToast("Project updated and saved to database successfully!", "success");
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to update project:", err);
-      showToast("Failed to update project", "error");
+      showToast(`Failed to update project: ${err?.message || "Database error"}`, "error");
+      return false;
     }
-    return false;
   };
 
   const deleteProject = async (id: string) => {
-    if (!adminToken) return false;
+    if (!adminToken) {
+      showToast("Authentication required. Please log in as admin.", "error");
+      return false;
+    }
     try {
       const existing = projects.find((p) => p.id === id);
-      // 1. Delete from Firestore database
-      await deleteProjectFromCloud(id);
+
+      // 1. MUST verify deletion in Firestore database FIRST
+      const cloudSuccess = await deleteProjectFromCloud(id);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not delete project from database. Delete was NOT committed.", "error");
+        return false;
+      }
 
       // 2. Delete from server backend
       try {
@@ -779,7 +814,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. Update local state
+      // 3. ONLY update local state after confirmed database deletion
       setProjects((prev) => prev.filter((p) => p.id !== id));
       if (selectedProject?.id === id) {
         setSelectedProject(null);
@@ -792,13 +827,13 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         });
       }
 
-      showToast("Project deleted successfully!");
+      showToast("Project deleted from database successfully!", "success");
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to delete project:", err);
-      showToast("Failed to delete project", "error");
+      showToast(`Failed to delete project: ${err?.message || "Database error"}`, "error");
+      return false;
     }
-    return false;
   };
 
   const togglePinProject = async (id: string) => {
@@ -875,7 +910,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         order: typeof skill.order === "number" ? skill.order : skills.length + 1,
       };
 
-      await saveSkillToCloud(newSkill);
+      const cloudSuccess = await saveSkillToCloud(newSkill);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not save skill to database.", "error");
+        return false;
+      }
 
       try {
         await fetch("/api/skills", {
@@ -895,10 +934,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "skill_updated",
         title: `Added technical skill: ${newSkill.name}`,
       });
-      showToast("Skill added!");
+      showToast("Skill added and saved to database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to add skill", "error");
+    } catch (err: any) {
+      showToast(`Failed to add skill: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -910,7 +949,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       if (!existing) return false;
       const updated: Skill = { ...existing, ...skill, id };
 
-      await saveSkillToCloud(updated);
+      const cloudSuccess = await saveSkillToCloud(updated);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not update skill in database.", "error");
+        return false;
+      }
 
       try {
         await fetch(`/api/skills/${id}`, {
@@ -930,10 +973,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "skill_updated",
         title: `Updated skill: ${updated.name}`,
       });
-      showToast("Skill updated!");
+      showToast("Skill updated and saved to database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to update skill", "error");
+    } catch (err: any) {
+      showToast(`Failed to update skill: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -942,7 +985,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (!adminToken) return false;
     try {
       const existing = skills.find((s) => s.id === id);
-      await deleteSkillFromCloud(id);
+      const cloudSuccess = await deleteSkillFromCloud(id);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not delete skill from database.", "error");
+        return false;
+      }
+
       try {
         await fetch(`/api/skills/${id}`, {
           method: "DELETE",
@@ -956,10 +1004,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "skill_updated",
         title: `Removed skill: ${existing?.name || "skill"}`,
       });
-      showToast("Skill removed.");
+      showToast("Skill removed from database successfully.", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to remove skill", "error");
+    } catch (err: any) {
+      showToast(`Failed to remove skill: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -982,7 +1030,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         order: typeof ach.order === "number" ? ach.order : achievements.length + 1,
       };
 
-      await saveAchievementToCloud(newAch);
+      const cloudSuccess = await saveAchievementToCloud(newAch);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not save achievement to database.", "error");
+        return false;
+      }
 
       try {
         await fetch("/api/achievements", {
@@ -1003,10 +1055,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         title: `Unlocked achievement: ${newAch.title}`,
         description: newAch.description,
       });
-      showToast("Achievement added successfully!");
+      showToast("Achievement added and saved to database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to add achievement", "error");
+    } catch (err: any) {
+      showToast(`Failed to add achievement: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -1018,7 +1070,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       if (!existing) return false;
       const updated: Achievement = { ...existing, ...ach, id };
 
-      await saveAchievementToCloud(updated);
+      const cloudSuccess = await saveAchievementToCloud(updated);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not update achievement in database.", "error");
+        return false;
+      }
 
       try {
         await fetch(`/api/achievements/${id}`, {
@@ -1038,10 +1094,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "achievement_unlocked",
         title: `Updated achievement: ${updated.title}`,
       });
-      showToast("Achievement updated!");
+      showToast("Achievement updated and saved to database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to update achievement", "error");
+    } catch (err: any) {
+      showToast(`Failed to update achievement: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -1050,7 +1106,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (!adminToken) return false;
     try {
       const existing = achievements.find((a) => a.id === id);
-      await deleteAchievementFromCloud(id);
+      const cloudSuccess = await deleteAchievementFromCloud(id);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not delete achievement from database.", "error");
+        return false;
+      }
+
       try {
         await fetch(`/api/achievements/${id}`, {
           method: "DELETE",
@@ -1064,10 +1125,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "achievement_unlocked",
         title: `Removed achievement: ${existing?.title || "achievement"}`,
       });
-      showToast("Achievement deleted successfully.");
+      showToast("Achievement deleted from database successfully.", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to delete achievement", "error");
+    } catch (err: any) {
+      showToast(`Failed to delete achievement: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -1091,7 +1152,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         technologies: Array.isArray(exp.technologies) ? exp.technologies : [],
       };
 
-      await saveExperienceToCloud(newExp);
+      const cloudSuccess = await saveExperienceToCloud(newExp);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not save experience entry to database.", "error");
+        return false;
+      }
 
       try {
         await fetch("/api/experiences", {
@@ -1111,10 +1176,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "experience_updated",
         title: `Added career experience: ${newExp.role} at ${newExp.company}`,
       });
-      showToast("Career experience entry added!");
+      showToast("Career experience saved to database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to add experience entry", "error");
+    } catch (err: any) {
+      showToast(`Failed to add experience entry: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -1126,7 +1191,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       if (!existing) return false;
       const updated: Experience = { ...existing, ...exp, id };
 
-      await saveExperienceToCloud(updated);
+      const cloudSuccess = await saveExperienceToCloud(updated);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not update experience entry in database.", "error");
+        return false;
+      }
 
       try {
         await fetch(`/api/experiences/${id}`, {
@@ -1146,10 +1215,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "experience_updated",
         title: `Updated experience at ${updated.company}`,
       });
-      showToast("Experience entry updated!");
+      showToast("Experience entry updated in database!", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to update experience entry", "error");
+    } catch (err: any) {
+      showToast(`Failed to update experience entry: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
@@ -1158,7 +1227,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (!adminToken) return false;
     try {
       const existing = experiences.find((e) => e.id === id);
-      await deleteExperienceFromCloud(id);
+      const cloudSuccess = await deleteExperienceFromCloud(id);
+      if (!cloudSuccess) {
+        showToast("Database error: Could not delete experience entry from database.", "error");
+        return false;
+      }
+
       try {
         await fetch(`/api/experiences/${id}`, {
           method: "DELETE",
@@ -1172,10 +1246,10 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         type: "experience_updated",
         title: `Removed experience: ${existing?.company || "entry"}`,
       });
-      showToast("Experience entry removed.");
+      showToast("Experience entry removed from database.", "success");
       return true;
-    } catch (err) {
-      showToast("Failed to remove experience entry", "error");
+    } catch (err: any) {
+      showToast(`Failed to remove experience entry: ${err?.message || "Database error"}`, "error");
     }
     return false;
   };
