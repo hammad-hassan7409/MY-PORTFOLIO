@@ -7,6 +7,12 @@ import { createServer as createViteServer } from "vite";
 import { initialData } from "./server/initialData.ts";
 import { PortfolioData, Project, Skill, Achievement, Experience, Message, Profile, ActivityLog, ActivityType, ContributionData } from "./src/types.ts";
 import { calculateStreakAndContributions, generateSeedActivities, formatLocalDate } from "./src/utils/streakUtils.ts";
+import {
+  getProjectsFromFirestore,
+  saveProjectToFirestore,
+  deleteProjectFromFirestore,
+  syncProjectsToFirestore,
+} from "./server/firestoreService.ts";
 
 dotenv.config();
 
@@ -96,12 +102,71 @@ function recordServerActivity(
 
 loadStore();
 
+// Sync in-memory store with Firestore database on startup
+async function syncStoreWithDatabase() {
+  try {
+    const cloudProjects = await getProjectsFromFirestore();
+    if (cloudProjects && cloudProjects.length > 0) {
+      const projectMap = new Map<string, Project>();
+      for (const p of store.projects) {
+        if (p && p.id) projectMap.set(p.id, p);
+      }
+      for (const p of cloudProjects) {
+        if (p && p.id) projectMap.set(p.id, p);
+      }
+      store.projects = Array.from(projectMap.values()).sort(
+        (a, b) => (a.order || 0) - (b.order || 0)
+      );
+      saveStore();
+      console.log(`[Server] Synchronized ${store.projects.length} projects with Firestore database.`);
+    } else if (store.projects && store.projects.length > 0) {
+      await syncProjectsToFirestore(store.projects);
+      console.log(`[Server] Seeded ${store.projects.length} projects from local store to Firestore.`);
+    }
+  } catch (err) {
+    console.warn("[Server] Could not sync store with Firestore on startup:", err);
+  }
+}
+
+syncStoreWithDatabase();
+
 // Admin Authentication Setup
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "hammadhassan7409@gmail.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "hammad";
 
 // Active sessions map: token -> { email, createdAt, expiresAt }
 const activeSessions = new Map<string, { email: string; expiresAt: number }>();
+const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
+
+function loadSessions() {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf-8"));
+      if (Array.isArray(parsed)) {
+        const now = Date.now();
+        for (const [token, session] of parsed) {
+          if (session && session.expiresAt > now) {
+            activeSessions.set(token, session);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Could not load sessions file:", e);
+  }
+}
+
+function saveSessions() {
+  try {
+    const now = Date.now();
+    const validEntries = Array.from(activeSessions.entries()).filter(([_, s]) => s && s.expiresAt > now);
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(validEntries, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Could not save sessions file:", e);
+  }
+}
+
+loadSessions();
 
 function generateToken(): string {
   return crypto.randomBytes(32).toString("hex");
@@ -130,12 +195,14 @@ function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
 
   if (Date.now() > session.expiresAt) {
     activeSessions.delete(token);
+    saveSessions();
     res.status(401).json({ error: "Unauthorized: Session has expired. Please log in again." });
     return;
   }
 
-  // Extend session on activity
-  session.expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+  // Extend session on activity (7 days)
+  session.expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+  saveSessions();
   next();
 }
 
@@ -156,8 +223,9 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
 
   if (cleanEmail === cleanAdminEmail && String(password) === ADMIN_PASSWORD) {
     const token = generateToken();
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days persistent session
     activeSessions.set(token, { email: cleanEmail, expiresAt });
+    saveSessions();
 
     res.json({
       success: true,
@@ -258,7 +326,7 @@ app.get("/api/projects/:id", (req: Request, res: Response) => {
   res.json(project);
 });
 
-app.post("/api/projects", requireAdminAuth, (req: Request, res: Response) => {
+app.post("/api/projects", requireAdminAuth, async (req: Request, res: Response) => {
   const data = req.body;
   if (!data.name || !data.displayName) {
     res.status(400).json({ error: "Project slug name and display name are required." });
@@ -278,6 +346,7 @@ app.post("/api/projects", requireAdminAuth, (req: Request, res: Response) => {
     gallery: Array.isArray(data.gallery) && data.gallery.length > 0 ? data.gallery : [data.imageUrl || "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1200&auto=format&fit=crop&q=80"],
     status: data.status || "Live",
     isPinned: Boolean(data.isPinned),
+    isFeatured: Boolean(data.isFeatured),
     order: typeof data.order === "number" ? data.order : store.projects.length + 1,
     stars: Number(data.stars) || 0,
     forks: Number(data.forks) || 0,
@@ -285,7 +354,7 @@ app.post("/api/projects", requireAdminAuth, (req: Request, res: Response) => {
     githubUrl: data.githubUrl || "https://github.com/hammadhassan",
     highlights: Array.isArray(data.highlights) ? data.highlights : [],
     architecture: Array.isArray(data.architecture) ? data.architecture : [],
-    updatedAt: "Just now",
+    updatedAt: new Date().toISOString(),
     createdAt: data.createdAt || new Date().toISOString().split("T")[0],
   };
 
@@ -299,21 +368,26 @@ app.post("/api/projects", requireAdminAuth, (req: Request, res: Response) => {
     recordServerActivity("project_created", `Created new project ${newProject.displayName}`, newProject.description, { projectId: newProject.id });
   }
   saveStore();
+
+  // Persist to Firestore database
+  await saveProjectToFirestore(newProject);
+
   res.status(201).json({ success: true, project: newProject });
 });
 
-app.post("/api/projects/sync", (req: Request, res: Response) => {
+app.post("/api/projects/sync", async (req: Request, res: Response) => {
   const syncProjects = req.body;
   if (Array.isArray(syncProjects) && syncProjects.length > 0) {
     store.projects = syncProjects;
     saveStore();
+    await syncProjectsToFirestore(syncProjects);
     res.json({ success: true, count: syncProjects.length });
     return;
   }
   res.status(400).json({ error: "Invalid projects array" });
 });
 
-app.put("/api/projects/:id", requireAdminAuth, (req: Request, res: Response) => {
+app.put("/api/projects/:id", requireAdminAuth, async (req: Request, res: Response) => {
   const index = store.projects.findIndex((p) => p.id === req.params.id);
   if (index === -1) {
     res.status(404).json({ error: "Project not found." });
@@ -325,16 +399,20 @@ app.put("/api/projects/:id", requireAdminAuth, (req: Request, res: Response) => 
     ...existing,
     ...req.body,
     id: existing.id,
-    updatedAt: "Just now",
+    updatedAt: new Date().toISOString(),
   };
 
   store.projects[index] = updated;
   recordServerActivity("project_updated", `Updated project ${updated.displayName}`, updated.description, { projectId: updated.id });
   saveStore();
+
+  // Persist update to Firestore database
+  await saveProjectToFirestore(updated);
+
   res.json({ success: true, project: updated });
 });
 
-app.delete("/api/projects/:id", requireAdminAuth, (req: Request, res: Response) => {
+app.delete("/api/projects/:id", requireAdminAuth, async (req: Request, res: Response) => {
   const index = store.projects.findIndex((p) => p.id === req.params.id);
   if (index === -1) {
     res.status(404).json({ error: "Project not found." });
@@ -345,10 +423,14 @@ app.delete("/api/projects/:id", requireAdminAuth, (req: Request, res: Response) 
   store.projects.splice(index, 1);
   recordServerActivity("project_deleted", `Deleted project ${existing.displayName}`);
   saveStore();
+
+  // Delete from Firestore database
+  await deleteProjectFromFirestore(req.params.id);
+
   res.json({ success: true, message: "Project deleted successfully." });
 });
 
-app.put("/api/projects/:id/pin", requireAdminAuth, (req: Request, res: Response) => {
+app.put("/api/projects/:id/pin", requireAdminAuth, async (req: Request, res: Response) => {
   const project = store.projects.find((p) => p.id === req.params.id);
   if (!project) {
     res.status(404).json({ error: "Project not found." });
@@ -356,11 +438,13 @@ app.put("/api/projects/:id/pin", requireAdminAuth, (req: Request, res: Response)
   }
 
   project.isPinned = !project.isPinned;
+  project.updatedAt = new Date().toISOString();
   saveStore();
+  await saveProjectToFirestore(project);
   res.json({ success: true, project });
 });
 
-app.put("/api/projects/:id/feature", requireAdminAuth, (req: Request, res: Response) => {
+app.put("/api/projects/:id/feature", requireAdminAuth, async (req: Request, res: Response) => {
   const project = store.projects.find((p) => p.id === req.params.id);
   if (!project) {
     res.status(404).json({ error: "Project not found." });
@@ -368,11 +452,13 @@ app.put("/api/projects/:id/feature", requireAdminAuth, (req: Request, res: Respo
   }
 
   project.isFeatured = !project.isFeatured;
+  project.updatedAt = new Date().toISOString();
   saveStore();
+  await saveProjectToFirestore(project);
   res.json({ success: true, project });
 });
 
-app.put("/api/projects/reorder/batch", requireAdminAuth, (req: Request, res: Response) => {
+app.put("/api/projects/reorder/batch", requireAdminAuth, async (req: Request, res: Response) => {
   const { projectIds } = req.body;
   if (!Array.isArray(projectIds)) {
     res.status(400).json({ error: "projectIds array is required." });
@@ -383,10 +469,12 @@ app.put("/api/projects/reorder/batch", requireAdminAuth, (req: Request, res: Res
     const project = store.projects.find((p) => p.id === id);
     if (project) {
       project.order = index + 1;
+      project.updatedAt = new Date().toISOString();
     }
   });
 
   saveStore();
+  await syncProjectsToFirestore(store.projects);
   res.json({ success: true, projects: store.projects });
 });
 

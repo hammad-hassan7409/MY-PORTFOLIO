@@ -11,12 +11,13 @@ export async function readFileAsDataURL(file: File): Promise<string> {
 }
 
 /**
- * Resizes and optimizes an image data URL for avatar or project preview
+ * Resizes and optimizes an image data URL for avatar or project preview,
+ * ensuring high visual fidelity while keeping document sizes well below database limits.
  */
 export async function optimizeImage(
   file: File,
-  maxWidth: number = 1000,
-  maxHeight: number = 650,
+  maxWidth: number = 800,
+  maxHeight: number = 520,
   quality: number = 0.75
 ): Promise<string> {
   const dataUrl = await readFileAsDataURL(file);
@@ -48,11 +49,31 @@ export async function optimizeImage(
         return;
       }
 
+      // Draw white background for transparency fallback in JPEG
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
 
-      // Return web-friendly JPEG/PNG
-      const outputType = file.type === "image/png" ? "image/png" : "image/jpeg";
-      const optimizedUrl = canvas.toDataURL(outputType, quality);
+      // Always output high-quality compressed JPEG to prevent huge lossless PNG bloat (>1MB)
+      let optimizedUrl = canvas.toDataURL("image/jpeg", quality);
+
+      // If data URL exceeds 180 KB, incrementally compress to guarantee database safety
+      if (optimizedUrl.length > 180000) {
+        optimizedUrl = canvas.toDataURL("image/jpeg", 0.6);
+      }
+      if (optimizedUrl.length > 250000) {
+        const smallerCanvas = document.createElement("canvas");
+        smallerCanvas.width = Math.round(width * 0.7);
+        smallerCanvas.height = Math.round(height * 0.7);
+        const sCtx = smallerCanvas.getContext("2d");
+        if (sCtx) {
+          sCtx.fillStyle = "#ffffff";
+          sCtx.fillRect(0, 0, smallerCanvas.width, smallerCanvas.height);
+          sCtx.drawImage(img, 0, 0, smallerCanvas.width, smallerCanvas.height);
+          optimizedUrl = smallerCanvas.toDataURL("image/jpeg", 0.6);
+        }
+      }
+
       resolve(optimizedUrl);
     };
 

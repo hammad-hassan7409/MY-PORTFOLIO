@@ -56,6 +56,12 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
+export interface CloudOperationResult<T = any> {
+  success: boolean;
+  error?: string;
+  data?: T;
+}
+
 /**
  * =========================================================================
  * PROJECTS PERSISTENCE
@@ -64,19 +70,25 @@ export function sanitizeForFirestore<T>(data: T): T {
 
 /**
  * Save a single project to Firestore database (permanent cloud persistence)
+ * Includes read-back verification to guarantee database confirmation.
  */
-export async function saveProjectToCloud(project: Project): Promise<boolean> {
+export async function saveProjectToCloud(project: Project): Promise<CloudOperationResult<Project>> {
   if (!project || !project.id) {
     console.error("saveProjectToCloud error: Invalid project or missing ID", project);
-    return false;
+    return { success: false, error: "Project data is invalid or missing a unique ID." };
   }
 
   try {
     const docRef = doc(db, PROJECTS_COLLECTION, project.id);
 
-    // Ensure gallery doesn't hold redundant duplicates of the primary image
+    // Ensure gallery doesn't hold redundant duplicates of the primary image, especially base64
     let sanitizedGallery = Array.isArray(project.gallery) ? [...project.gallery] : [];
-    if (project.imageUrl && sanitizedGallery.length === 0) {
+    if (project.imageUrl && project.imageUrl.startsWith("data:")) {
+      // Strip any duplicate base64 string from gallery to prevent >1MB bloat
+      sanitizedGallery = sanitizedGallery.filter(
+        (url) => url && url !== project.imageUrl && !url.startsWith("data:")
+      );
+    } else if (project.imageUrl && sanitizedGallery.length === 0) {
       sanitizedGallery = [project.imageUrl];
     }
     const seen = new Set<string>();
@@ -100,36 +112,55 @@ export async function saveProjectToCloud(project: Project): Promise<boolean> {
       architecture: Array.isArray(project.architecture) ? project.architecture : [],
     });
 
+    // 1. Commit write to Firestore database
     await setDoc(docRef, projectDataToSave, { merge: true });
+
+    // 2. Explicitly read back from Firestore to verify document was committed
+    const verifySnap = await getDoc(docRef);
+    if (!verifySnap.exists()) {
+      return {
+        success: false,
+        error: `Database confirmation failed: Document '${project.id}' was not found in Firestore after write.`,
+      };
+    }
+
+    const verifiedProject = { ...verifySnap.data(), id: verifySnap.id } as Project;
 
     // Cache locally as immediate fallback
     try {
       const cached = getLocalCachedProjects();
       const idx = cached.findIndex((p) => p.id === project.id);
       if (idx >= 0) {
-        cached[idx] = { ...project, gallery: sanitizedGallery };
+        cached[idx] = verifiedProject;
       } else {
-        cached.push({ ...project, gallery: sanitizedGallery });
+        cached.push(verifiedProject);
       }
       saveLocalCachedProjects(cached);
     } catch {
       // ignore
     }
 
-    return true;
-  } catch (err) {
-    console.error("Failed to save project to Firestore cloud database:", err);
-    return false;
+    return { success: true, data: verifiedProject };
+  } catch (err: any) {
+    const errorMsg = err?.message || err?.code || "Unknown Firestore database error";
+    console.error("Failed to save project to Firestore cloud database:", errorMsg, err);
+    return { success: false, error: errorMsg };
   }
 }
 
 /**
  * Delete a project from Firestore database
  */
-export async function deleteProjectFromCloud(projectId: string): Promise<boolean> {
+export async function deleteProjectFromCloud(projectId: string): Promise<CloudOperationResult> {
   try {
     const docRef = doc(db, PROJECTS_COLLECTION, projectId);
     await deleteDoc(docRef);
+
+    // Verify deletion confirmed
+    const verifySnap = await getDoc(docRef);
+    if (verifySnap.exists()) {
+      return { success: false, error: `Database deletion failed: Document '${projectId}' still exists in Firestore.` };
+    }
 
     // Remove from local cache
     try {
@@ -139,10 +170,11 @@ export async function deleteProjectFromCloud(projectId: string): Promise<boolean
       // ignore
     }
 
-    return true;
-  } catch (err) {
-    console.error("Failed to delete project from Firestore cloud database:", err);
-    return false;
+    return { success: true };
+  } catch (err: any) {
+    const errorMsg = err?.message || err?.code || "Unknown Firestore database deletion error";
+    console.error("Failed to delete project from Firestore cloud database:", errorMsg, err);
+    return { success: false, error: errorMsg };
   }
 }
 
@@ -157,7 +189,7 @@ export async function loadProjectsFromCloud(): Promise<Project[] | null> {
       const list: Project[] = [];
       snap.forEach((d) => {
         const item = d.data() as Project;
-        if (item && item.id && item.displayName) {
+        if (item && (item.displayName || item.name)) {
           list.push({ ...item, id: d.id || item.id });
         }
       });
@@ -191,7 +223,7 @@ export function subscribeToCloudProjects(callback: (projects: Project[]) => void
           const list: Project[] = [];
           snapshot.forEach((d) => {
             const item = d.data() as Project;
-            if (item && item.id && item.displayName) {
+            if (item && (item.displayName || item.name)) {
               list.push({ ...item, id: d.id || item.id });
             }
           });

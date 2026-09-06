@@ -22,6 +22,7 @@ import {
   loadPortfolioFromCloud,
   savePortfolioToCloud,
   getLocalCachedProjects,
+  saveLocalCachedProjects,
   loadActivitiesFromCloud,
   saveActivityToCloud,
   subscribeToCloudActivities,
@@ -262,7 +263,30 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
   useEffect(() => {
     const unsubscribe = subscribeToCloudProjects((liveProjects) => {
       if (liveProjects && liveProjects.length > 0) {
-        setProjects(liveProjects);
+        setProjects((prev) => {
+          const map = new Map<string, Project>();
+          for (const p of prev) {
+            if (p && p.id) map.set(p.id, p);
+          }
+          for (const p of liveProjects) {
+            if (p && p.id) {
+              const existing = map.get(p.id);
+              if (existing && existing.updatedAt && p.updatedAt) {
+                const exTime = new Date(existing.updatedAt).getTime();
+                const pTime = new Date(p.updatedAt).getTime();
+                if (pTime >= exTime || isNaN(exTime)) {
+                  map.set(p.id, p);
+                }
+              } else {
+                map.set(p.id, p);
+              }
+            }
+          }
+          const merged = Array.from(map.values()).sort((a, b) => (a.order || 0) - (b.order || 0));
+          saveLocalCachedProjects(merged);
+          return merged;
+        });
+
         // Also keep local server cache up to date in background
         fetch("/api/projects/sync", {
           method: "POST",
@@ -413,20 +437,45 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         }
       }
 
-      // PROJECTS: Priority given to cloud projects
-      if (cloudProjects && cloudProjects.length > 0) {
-        setProjects(cloudProjects);
+      // PROJECTS: Merge cloud projects and server projects to ensure complete persistence
+      const projectMap = new Map<string, Project>();
+      if (Array.isArray(serverProjects)) {
+        for (const p of serverProjects) {
+          if (p && (p.id || (p as any)._id)) {
+            const id = p.id || (p as any)._id;
+            projectMap.set(id, { ...p, id });
+          }
+        }
+      }
+      if (Array.isArray(cloudProjects)) {
+        for (const p of cloudProjects) {
+          if (p && p.id) {
+            const existing = projectMap.get(p.id);
+            if (existing && existing.updatedAt && p.updatedAt) {
+              const exTime = new Date(existing.updatedAt).getTime();
+              const pTime = new Date(p.updatedAt).getTime();
+              if (pTime >= exTime || isNaN(exTime)) {
+                projectMap.set(p.id, p);
+              }
+            } else {
+              projectMap.set(p.id, p);
+            }
+          }
+        }
+      }
+
+      const mergedProjects = Array.from(projectMap.values()).sort(
+        (a, b) => (a.order || 0) - (b.order || 0)
+      );
+
+      if (mergedProjects.length > 0) {
+        setProjects(mergedProjects);
+        saveLocalCachedProjects(mergedProjects);
         safeFetchJson("/api/projects/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(cloudProjects),
+          body: JSON.stringify(mergedProjects),
         }).catch(() => {});
-      } else if (serverProjects && serverProjects.length > 0) {
-        setProjects(serverProjects);
-        // Seed server projects into cloud database so they exist permanently in Firestore
-        for (const p of serverProjects) {
-          saveProjectToCloud(p).catch(() => {});
-        }
       }
 
       // Helper to sanitize software engineer / engineer wording
@@ -674,12 +723,14 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       };
 
       // 1. MUST verify successful write into Firestore database FIRST
-      const cloudSuccess = await saveProjectToCloud(newProject);
-      if (!cloudSuccess) {
-        console.error("Firestore database rejected project write:", newProject.id);
-        showToast("Database error: Could not save project to database. Changes were NOT committed.", "error");
+      const cloudResult = await saveProjectToCloud(newProject);
+      if (!cloudResult.success) {
+        console.error("Firestore database rejected project write:", cloudResult.error);
+        showToast(`Database error: ${cloudResult.error || "Could not save project to database. Changes were NOT committed."}`, "error");
         return false;
       }
+
+      const committedProject = cloudResult.data || newProject;
 
       // 2. Also persist to server backend
       try {
@@ -689,7 +740,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
             "Content-Type": "application/json",
             Authorization: `Bearer ${adminToken}`,
           },
-          body: JSON.stringify(newProject),
+          body: JSON.stringify(committedProject),
         });
       } catch (e) {
         console.warn("Backend API sync notice:", e);
@@ -697,22 +748,26 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
 
       // 3. ONLY update local state after confirmed database write
       setProjects((prev) => {
-        const existingIdx = prev.findIndex((p) => p.id === newProject.id);
+        const existingIdx = prev.findIndex((p) => p.id === committedProject.id);
+        let next: Project[];
         if (existingIdx >= 0) {
-          const clone = [...prev];
-          clone[existingIdx] = newProject;
-          return clone;
+          next = [...prev];
+          next[existingIdx] = committedProject;
+        } else {
+          next = [...prev, committedProject];
         }
-        return [...prev, newProject];
+        next.sort((a, b) => (a.order || 0) - (b.order || 0));
+        saveLocalCachedProjects(next);
+        return next;
       });
 
       // 4. Log real-time activity for streak & contribution graph
       logActivity({
         type: "project_created",
-        title: `Published new project: ${newProject.displayName}`,
-        description: newProject.description,
-        repo: newProject.name,
-        metadata: { projectId: newProject.id },
+        title: `Published new project: ${committedProject.displayName}`,
+        description: committedProject.description,
+        repo: committedProject.name,
+        metadata: { projectId: committedProject.id },
       });
 
       showToast("Project created and saved to database successfully!", "success");
@@ -744,12 +799,14 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       };
 
       // 1. MUST verify update in Firestore database FIRST
-      const cloudSuccess = await saveProjectToCloud(updatedProject);
-      if (!cloudSuccess) {
-        console.error("Firestore database rejected project update:", id);
-        showToast("Database error: Could not update project in database. Changes were NOT committed.", "error");
+      const cloudResult = await saveProjectToCloud(updatedProject);
+      if (!cloudResult.success) {
+        console.error("Firestore database rejected project update:", id, cloudResult.error);
+        showToast(`Database error: ${cloudResult.error || "Could not update project in database. Changes were NOT committed."}`, "error");
         return false;
       }
+
+      const committedProject = cloudResult.data || updatedProject;
 
       // 2. Update in server backend
       try {
@@ -759,25 +816,29 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
             "Content-Type": "application/json",
             Authorization: `Bearer ${adminToken}`,
           },
-          body: JSON.stringify(updatedProject),
+          body: JSON.stringify(committedProject),
         });
       } catch (e) {
         console.warn("Backend API sync notice:", e);
       }
 
       // 3. ONLY update local state after confirmed database write
-      setProjects((prev) => prev.map((p) => (p.id === id ? updatedProject : p)));
+      setProjects((prev) => {
+        const next = prev.map((p) => (p.id === id ? committedProject : p));
+        saveLocalCachedProjects(next);
+        return next;
+      });
       if (selectedProject?.id === id) {
-        setSelectedProject(updatedProject);
+        setSelectedProject(committedProject);
       }
 
       // 4. Log real-time activity for streak
       logActivity({
         type: "project_updated",
-        title: `Updated project: ${updatedProject.displayName}`,
-        description: updatedProject.description,
-        repo: updatedProject.name,
-        metadata: { projectId: updatedProject.id },
+        title: `Updated project: ${committedProject.displayName}`,
+        description: committedProject.description,
+        repo: committedProject.name,
+        metadata: { projectId: committedProject.id },
       });
 
       showToast("Project updated and saved to database successfully!", "success");
@@ -798,9 +859,9 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       const existing = projects.find((p) => p.id === id);
 
       // 1. MUST verify deletion in Firestore database FIRST
-      const cloudSuccess = await deleteProjectFromCloud(id);
-      if (!cloudSuccess) {
-        showToast("Database error: Could not delete project from database. Delete was NOT committed.", "error");
+      const cloudResult = await deleteProjectFromCloud(id);
+      if (!cloudResult.success) {
+        showToast(`Database error: ${cloudResult.error || "Could not delete project from database. Delete was NOT committed."}`, "error");
         return false;
       }
 
@@ -815,7 +876,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
       }
 
       // 3. ONLY update local state after confirmed database deletion
-      setProjects((prev) => prev.filter((p) => p.id !== id));
+      setProjects((prev) => {
+        const next = prev.filter((p) => p.id !== id);
+        saveLocalCachedProjects(next);
+        return next;
+      });
       if (selectedProject?.id === id) {
         setSelectedProject(null);
       }
@@ -868,6 +933,7 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         .filter(Boolean) as Project[];
 
       setProjects(updatedList);
+      saveLocalCachedProjects(updatedList);
 
       // Update order for each in Firestore
       for (const p of updatedList) {
