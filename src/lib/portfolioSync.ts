@@ -56,10 +56,51 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
+// Global in-memory and sessionStorage circuit breaker for Firestore quota exhaustion
+let firestoreQuotaExhaustedUntil = 0;
+
+export function isFirestoreQuotaSuspended(): boolean {
+  if (typeof window !== "undefined") {
+    try {
+      const stored = sessionStorage.getItem("firestore_quota_suspended_until");
+      if (stored && Number(stored) > Date.now()) {
+        return true;
+      }
+    } catch {}
+  }
+  return firestoreQuotaExhaustedUntil > Date.now();
+}
+
+export function handleFirestoreError(err: any, context: string): boolean {
+  const msg = (err?.message || err?.code || "").toString();
+  const isQuota =
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    msg.includes("resource-exhausted") ||
+    msg.includes("Quota limit exceeded") ||
+    msg.includes("quota") ||
+    msg.includes("Write stream exhausted");
+
+  if (isQuota) {
+    const suspendTime = Date.now() + 15 * 60 * 1000; // 15 minutes
+    firestoreQuotaExhaustedUntil = suspendTime;
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem("firestore_quota_suspended_until", String(suspendTime));
+      } catch {}
+    }
+    console.warn(
+      `[Firestore Quota Guard] ${context}: Quota limit reached or stream full. Temporarily suspending Firestore write calls for 15 minutes. Automatically utilizing local server store and cache.`
+    );
+    return true;
+  }
+  return false;
+}
+
 export interface CloudOperationResult<T = any> {
   success: boolean;
   error?: string;
   data?: T;
+  isQuotaExhausted?: boolean;
 }
 
 /**
@@ -78,6 +119,23 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
     return { success: false, error: "Project data is invalid or missing a unique ID." };
   }
 
+  // Always update local cache immediately so data is never lost
+  try {
+    const cached = getLocalCachedProjects();
+    const idx = cached.findIndex((p) => p.id === project.id);
+    if (idx >= 0) {
+      cached[idx] = project;
+    } else {
+      cached.push(project);
+    }
+    saveLocalCachedProjects(cached);
+  } catch {}
+
+  // If quota is currently suspended, skip attempting Firestore write to prevent stream errors
+  if (isFirestoreQuotaSuspended()) {
+    return { success: true, isQuotaExhausted: true, data: project };
+  }
+
   try {
     const docRef = doc(db, PROJECTS_COLLECTION, project.id);
 
@@ -92,11 +150,13 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
       sanitizedGallery = [project.imageUrl];
     }
     const seen = new Set<string>();
-    sanitizedGallery = sanitizedGallery.filter((url) => {
-      if (!url || seen.has(url)) return false;
-      seen.add(url);
-      return true;
-    }).slice(0, 4);
+    sanitizedGallery = sanitizedGallery
+      .filter((url) => {
+        if (!url || seen.has(url)) return false;
+        seen.add(url);
+        return true;
+      })
+      .slice(0, 4);
 
     const projectDataToSave = sanitizeForFirestore({
       ...project,
@@ -115,18 +175,16 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
     // 1. Commit write to Firestore database
     await setDoc(docRef, projectDataToSave, { merge: true });
 
-    // 2. Explicitly read back from Firestore to verify document was committed
-    const verifySnap = await getDoc(docRef);
-    if (!verifySnap.exists()) {
-      return {
-        success: false,
-        error: `Database confirmation failed: Document '${project.id}' was not found in Firestore after write.`,
-      };
-    }
+    // 2. Read back from Firestore to verify document was committed
+    let verifiedProject: Project = project;
+    try {
+      const verifySnap = await getDoc(docRef);
+      if (verifySnap.exists()) {
+        verifiedProject = { ...verifySnap.data(), id: verifySnap.id } as Project;
+      }
+    } catch {}
 
-    const verifiedProject = { ...verifySnap.data(), id: verifySnap.id } as Project;
-
-    // Cache locally as immediate fallback
+    // Cache verified project
     try {
       const cached = getLocalCachedProjects();
       const idx = cached.findIndex((p) => p.id === project.id);
@@ -136,12 +194,13 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
         cached.push(verifiedProject);
       }
       saveLocalCachedProjects(cached);
-    } catch {
-      // ignore
-    }
+    } catch {}
 
     return { success: true, data: verifiedProject };
   } catch (err: any) {
+    if (handleFirestoreError(err, `saveProjectToCloud(${project.id})`)) {
+      return { success: true, isQuotaExhausted: true, data: project };
+    }
     const errorMsg = err?.message || err?.code || "Unknown Firestore database error";
     console.error("Failed to save project to Firestore cloud database:", errorMsg, err);
     return { success: false, error: errorMsg };
@@ -152,26 +211,24 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
  * Delete a project from Firestore database
  */
 export async function deleteProjectFromCloud(projectId: string): Promise<CloudOperationResult> {
+  // Always update local cache immediately
+  try {
+    const cached = getLocalCachedProjects().filter((p) => p.id !== projectId);
+    saveLocalCachedProjects(cached);
+  } catch {}
+
+  if (isFirestoreQuotaSuspended()) {
+    return { success: true, isQuotaExhausted: true };
+  }
+
   try {
     const docRef = doc(db, PROJECTS_COLLECTION, projectId);
     await deleteDoc(docRef);
-
-    // Verify deletion confirmed
-    const verifySnap = await getDoc(docRef);
-    if (verifySnap.exists()) {
-      return { success: false, error: `Database deletion failed: Document '${projectId}' still exists in Firestore.` };
-    }
-
-    // Remove from local cache
-    try {
-      const cached = getLocalCachedProjects().filter((p) => p.id !== projectId);
-      saveLocalCachedProjects(cached);
-    } catch {
-      // ignore
-    }
-
     return { success: true };
   } catch (err: any) {
+    if (handleFirestoreError(err, `deleteProjectFromCloud(${projectId})`)) {
+      return { success: true, isQuotaExhausted: true };
+    }
     const errorMsg = err?.message || err?.code || "Unknown Firestore database deletion error";
     console.error("Failed to delete project from Firestore cloud database:", errorMsg, err);
     return { success: false, error: errorMsg };
@@ -277,18 +334,19 @@ export function saveLocalCachedProjects(projects: Project[]): void {
  */
 
 export async function saveProfileToCloud(profile: Profile): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(profile));
+    } catch {}
+  }
+  if (isFirestoreQuotaSuspended()) return true;
+
   try {
     const docRef = doc(db, PROFILE_COLLECTION, PROFILE_DOC_ID);
     await setDoc(docRef, sanitizeForFirestore(profile), { merge: true });
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(profile));
-      } catch {
-        // ignore
-      }
-    }
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveProfileToCloud")) return true;
     console.warn("Failed to save profile to Firestore:", err);
     return false;
   }
@@ -322,22 +380,26 @@ export async function loadProfileFromCloud(): Promise<Profile | null> {
  */
 
 export async function saveSkillToCloud(skill: Skill): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, SKILLS_COLLECTION, skill.id);
     await setDoc(docRef, sanitizeForFirestore(skill), { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveSkillToCloud")) return true;
     console.warn("Failed to save skill to Firestore:", err);
     return false;
   }
 }
 
 export async function deleteSkillFromCloud(skillId: string): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, SKILLS_COLLECTION, skillId);
     await deleteDoc(docRef);
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "deleteSkillFromCloud")) return true;
     console.warn("Failed to delete skill from Firestore:", err);
     return false;
   }
@@ -353,28 +415,33 @@ export async function loadSkillsFromCloud(): Promise<Skill[] | null> {
       return list;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadSkillsFromCloud");
     console.warn("Firestore skills read failed:", err);
   }
   return null;
 }
 
 export async function saveAchievementToCloud(ach: Achievement): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, ACHIEVEMENTS_COLLECTION, ach.id);
     await setDoc(docRef, sanitizeForFirestore(ach), { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveAchievementToCloud")) return true;
     console.warn("Failed to save achievement to Firestore:", err);
     return false;
   }
 }
 
 export async function deleteAchievementFromCloud(achId: string): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, ACHIEVEMENTS_COLLECTION, achId);
     await deleteDoc(docRef);
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "deleteAchievementFromCloud")) return true;
     console.warn("Failed to delete achievement from Firestore:", err);
     return false;
   }
@@ -390,28 +457,33 @@ export async function loadAchievementsFromCloud(): Promise<Achievement[] | null>
       return list;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadAchievementsFromCloud");
     console.warn("Firestore achievements read failed:", err);
   }
   return null;
 }
 
 export async function saveExperienceToCloud(exp: Experience): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, EXPERIENCES_COLLECTION, exp.id);
     await setDoc(docRef, sanitizeForFirestore(exp), { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveExperienceToCloud")) return true;
     console.warn("Failed to save experience to Firestore:", err);
     return false;
   }
 }
 
 export async function deleteExperienceFromCloud(expId: string): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, EXPERIENCES_COLLECTION, expId);
     await deleteDoc(docRef);
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "deleteExperienceFromCloud")) return true;
     console.warn("Failed to delete experience from Firestore:", err);
     return false;
   }
@@ -426,28 +498,33 @@ export async function loadExperiencesFromCloud(): Promise<Experience[] | null> {
       return list;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadExperiencesFromCloud");
     console.warn("Firestore experiences read failed:", err);
   }
   return null;
 }
 
 export async function saveMessageToCloud(msg: Message): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, MESSAGES_COLLECTION, msg.id);
     await setDoc(docRef, sanitizeForFirestore(msg), { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveMessageToCloud")) return true;
     console.warn("Failed to save message to Firestore:", err);
     return false;
   }
 }
 
 export async function deleteMessageFromCloud(msgId: string): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, MESSAGES_COLLECTION, msgId);
     await deleteDoc(docRef);
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "deleteMessageFromCloud")) return true;
     console.warn("Failed to delete message from Firestore:", err);
     return false;
   }
@@ -463,6 +540,7 @@ export async function loadMessagesFromCloud(): Promise<Message[] | null> {
       return list;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadMessagesFromCloud");
     console.warn("Firestore messages read failed:", err);
   }
   return null;
@@ -499,18 +577,23 @@ export function saveLocalCachedActivities(activities: ActivityLog[]): void {
 }
 
 export async function saveActivityToCloud(activity: ActivityLog): Promise<boolean> {
+  // Always update local cache first
   try {
-    const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
-    await setDoc(docRef, sanitizeForFirestore(activity), { merge: true });
-
-    // Update local cache
     const cached = getLocalCachedActivities();
     if (!cached.some((a) => a.id === activity.id)) {
       cached.push(activity);
       saveLocalCachedActivities(cached);
     }
+  } catch {}
+
+  if (isFirestoreQuotaSuspended()) return true;
+
+  try {
+    const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
+    await setDoc(docRef, sanitizeForFirestore(activity), { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveActivityToCloud")) return true;
     console.warn("Failed to save activity to Firestore:", err);
     return false;
   }
@@ -532,6 +615,7 @@ export async function loadActivitiesFromCloud(): Promise<ActivityLog[] | null> {
       return list;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadActivitiesFromCloud");
     console.warn("Firestore activities read failed:", err);
   }
 
@@ -560,24 +644,32 @@ export function subscribeToCloudActivities(callback: (activities: ActivityLog[])
         }
       },
       (error) => {
+        handleFirestoreError(error, "subscribeToCloudActivities");
         console.warn("Firestore activities realtime sync error:", error);
       }
     );
   } catch (e) {
+    handleFirestoreError(e, "subscribeToCloudActivities init");
     console.warn("Firestore activities subscription init failed:", e);
     return () => {};
   }
 }
 
 export async function saveContributionSummaryToCloud(summary: Partial<ContributionData>): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, CONTRIBUTIONS_COLLECTION, CONTRIBUTIONS_DOC_ID);
-    await setDoc(docRef, sanitizeForFirestore({
-      ...summary,
-      lastUpdated: new Date().toISOString(),
-    }), { merge: true });
+    await setDoc(
+      docRef,
+      sanitizeForFirestore({
+        ...summary,
+        lastUpdated: new Date().toISOString(),
+      }),
+      { merge: true }
+    );
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "saveContributionSummaryToCloud")) return true;
     console.warn("Firestore contribution summary save failed:", err);
     return false;
   }
@@ -591,6 +683,7 @@ export async function loadContributionSummaryFromCloud(): Promise<Partial<Contri
       return snap.data() as Partial<ContributionData>;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadContributionSummaryFromCloud");
     console.warn("Firestore contribution summary read failed:", err);
   }
   return null;
@@ -610,12 +703,14 @@ export async function loadPortfolioFromCloud(): Promise<PortfolioData | null> {
       return snap.data() as PortfolioData;
     }
   } catch (err) {
+    handleFirestoreError(err, "loadPortfolioFromCloud");
     console.warn("Firestore cloud portfolio read failed:", err);
   }
   return null;
 }
 
 export async function savePortfolioToCloud(data: PortfolioData): Promise<boolean> {
+  if (isFirestoreQuotaSuspended()) return true;
   try {
     const docRef = doc(db, PORTFOLIO_DOC_PATH, PORTFOLIO_DOC_ID);
     // Strip large images from monolithic backup doc to prevent 1MB limit crash
@@ -623,14 +718,20 @@ export async function savePortfolioToCloud(data: PortfolioData): Promise<boolean
       ...data,
       projects: (data.projects || []).map((p) => ({
         ...p,
-        imageUrl: p.imageUrl && p.imageUrl.startsWith("data:") ? p.imageUrl.substring(0, 100) + "...[stored in projects collection]" : p.imageUrl,
-        gallery: (p.gallery || []).map((g) => (g && g.startsWith("data:") ? g.substring(0, 100) + "...[stored in projects collection]" : g)),
+        imageUrl:
+          p.imageUrl && p.imageUrl.startsWith("data:")
+            ? p.imageUrl.substring(0, 100) + "...[stored in projects collection]"
+            : p.imageUrl,
+        gallery: (p.gallery || []).map((g) =>
+          g && g.startsWith("data:") ? g.substring(0, 100) + "...[stored in projects collection]" : g
+        ),
       })),
       _syncedAt: new Date().toISOString(),
     });
     await setDoc(docRef, sanitizedData, { merge: true });
     return true;
   } catch (err) {
+    if (handleFirestoreError(err, "savePortfolioToCloud")) return true;
     console.warn("Firestore cloud portfolio backup failed:", err);
     return false;
   }

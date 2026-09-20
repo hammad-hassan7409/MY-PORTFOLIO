@@ -10,7 +10,6 @@ import {
   Mail,
   ShieldCheck,
   LogOut,
-  Sparkles,
   Command,
   Menu,
   X,
@@ -64,14 +63,19 @@ export const Header: React.FC = () => {
                 <Code2 className="w-5 h-5" />
               </div>
               <div className="text-left">
-                <span className="font-semibold text-base tracking-tight text-[#f0f6fc] flex items-center gap-1.5">
-                  {profile?.name || "Hammad Hassan"}
-                  <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-mono font-semibold hidden sm:inline-flex items-center gap-1">
-                    <Sparkles className="w-2.5 h-2.5 text-amber-400" />
-                    PREMIUM
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-base tracking-tight text-[#f0f6fc]">
+                    {profile?.name || "Hammad Hassan"}
                   </span>
-                </span>
-                <p className="text-xs text-[#8b949e] font-mono leading-none hidden md:block mt-0.5">
+                  <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium tracking-tight bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400"></span>
+                    </span>
+                    <span>Available for hire</span>
+                  </span>
+                </div>
+                <p className="text-xs text-[#8b949e] font-mono leading-none hidden md:block mt-1">
                   MY PORTFOLIO • @{profile?.username || "hammadhassan"}
                 </p>
               </div>

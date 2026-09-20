@@ -27,6 +27,7 @@ import {
   saveActivityToCloud,
   subscribeToCloudActivities,
   getLocalCachedActivities,
+  CloudOperationResult,
 } from "../lib/portfolioSync";
 import { calculateStreakAndContributions, generateSeedActivities, formatLocalDate } from "../utils/streakUtils";
 
@@ -422,19 +423,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         setContributions(serverContributions);
         if (Array.isArray(serverContributions.activities) && serverContributions.activities.length > 0) {
           setActivities(serverContributions.activities);
-          // Seed cloud with initial activities
-          for (const a of serverContributions.activities) {
-            saveActivityToCloud(a).catch(() => {});
-          }
         }
       } else {
-        // Generate seed activities for initial rendering
+        // Generate seed activities for initial rendering (kept local, not spammed to cloud)
         const seedActs = generateSeedActivities();
         setActivities(seedActs);
         setContributions(calculateStreakAndContributions(seedActs));
-        for (const a of seedActs) {
-          saveActivityToCloud(a).catch(() => {});
-        }
       }
 
       // PROJECTS: Merge cloud projects and server projects to ensure complete persistence
@@ -722,19 +716,20 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         createdAt: proj.createdAt || new Date().toISOString().split("T")[0],
       };
 
-      // 1. MUST verify successful write into Firestore database FIRST
-      const cloudResult = await saveProjectToCloud(newProject);
-      if (!cloudResult.success) {
-        console.error("Firestore database rejected project write:", cloudResult.error);
-        showToast(`Database error: ${cloudResult.error || "Could not save project to database. Changes were NOT committed."}`, "error");
-        return false;
+      // 1. Save to cloud database if available
+      let cloudResult: CloudOperationResult<Project> | null = null;
+      try {
+        cloudResult = await saveProjectToCloud(newProject);
+      } catch (e) {
+        console.warn("Cloud save warning:", e);
       }
 
-      const committedProject = cloudResult.data || newProject;
+      const committedProject = (cloudResult && cloudResult.data) || newProject;
 
       // 2. Also persist to server backend
+      let serverSaved = false;
       try {
-        await fetch("/api/projects", {
+        const res = await fetch("/api/projects", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -742,11 +737,19 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
           },
           body: JSON.stringify(committedProject),
         });
+        if (res.ok) serverSaved = true;
       } catch (e) {
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. ONLY update local state after confirmed database write
+      // Verify at least one persistence layer succeeded
+      if (!serverSaved && (!cloudResult || !cloudResult.success)) {
+        console.error("Firestore database and server rejected project write:", cloudResult?.error);
+        showToast(`Error: ${cloudResult?.error || "Could not save project to database or server."}`, "error");
+        return false;
+      }
+
+      // 3. Update local state and local cache
       setProjects((prev) => {
         const existingIdx = prev.findIndex((p) => p.id === committedProject.id);
         let next: Project[];
@@ -770,11 +773,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         metadata: { projectId: committedProject.id },
       });
 
-      showToast("Project created and saved to database successfully!", "success");
+      showToast("Project created and saved successfully!", "success");
       return true;
     } catch (err: any) {
       console.error("Failed to create project:", err);
-      showToast(`Failed to create project: ${err?.message || "Database error"}`, "error");
+      showToast(`Failed to create project: ${err?.message || "Storage error"}`, "error");
       return false;
     }
   };
@@ -798,19 +801,20 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         updatedAt: new Date().toISOString(),
       };
 
-      // 1. MUST verify update in Firestore database FIRST
-      const cloudResult = await saveProjectToCloud(updatedProject);
-      if (!cloudResult.success) {
-        console.error("Firestore database rejected project update:", id, cloudResult.error);
-        showToast(`Database error: ${cloudResult.error || "Could not update project in database. Changes were NOT committed."}`, "error");
-        return false;
+      // 1. Update in cloud database
+      let cloudResult: CloudOperationResult<Project> | null = null;
+      try {
+        cloudResult = await saveProjectToCloud(updatedProject);
+      } catch (e) {
+        console.warn("Cloud update warning:", e);
       }
 
-      const committedProject = cloudResult.data || updatedProject;
+      const committedProject = (cloudResult && cloudResult.data) || updatedProject;
 
       // 2. Update in server backend
+      let serverSaved = false;
       try {
-        await fetch(`/api/projects/${id}`, {
+        const res = await fetch(`/api/projects/${id}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
@@ -818,11 +822,19 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
           },
           body: JSON.stringify(committedProject),
         });
+        if (res.ok) serverSaved = true;
       } catch (e) {
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. ONLY update local state after confirmed database write
+      // Verify at least one persistence layer succeeded
+      if (!serverSaved && (!cloudResult || !cloudResult.success)) {
+        console.error("Firestore database and server rejected project update:", id, cloudResult?.error);
+        showToast(`Error: ${cloudResult?.error || "Could not update project in database or server."}`, "error");
+        return false;
+      }
+
+      // 3. Update local state and cache
       setProjects((prev) => {
         const next = prev.map((p) => (p.id === id ? committedProject : p));
         saveLocalCachedProjects(next);
@@ -841,11 +853,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         metadata: { projectId: committedProject.id },
       });
 
-      showToast("Project updated and saved to database successfully!", "success");
+      showToast("Project updated and saved successfully!", "success");
       return true;
     } catch (err: any) {
       console.error("Failed to update project:", err);
-      showToast(`Failed to update project: ${err?.message || "Database error"}`, "error");
+      showToast(`Failed to update project: ${err?.message || "Storage error"}`, "error");
       return false;
     }
   };
@@ -858,24 +870,32 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
     try {
       const existing = projects.find((p) => p.id === id);
 
-      // 1. MUST verify deletion in Firestore database FIRST
-      const cloudResult = await deleteProjectFromCloud(id);
-      if (!cloudResult.success) {
-        showToast(`Database error: ${cloudResult.error || "Could not delete project from database. Delete was NOT committed."}`, "error");
-        return false;
+      // 1. Delete from cloud database
+      let cloudResult: CloudOperationResult | null = null;
+      try {
+        cloudResult = await deleteProjectFromCloud(id);
+      } catch (e) {
+        console.warn("Cloud delete warning:", e);
       }
 
       // 2. Delete from server backend
+      let serverDeleted = false;
       try {
-        await fetch(`/api/projects/${id}`, {
+        const res = await fetch(`/api/projects/${id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${adminToken}` },
         });
+        if (res.ok) serverDeleted = true;
       } catch (e) {
         console.warn("Backend API sync notice:", e);
       }
 
-      // 3. ONLY update local state after confirmed database deletion
+      if (!serverDeleted && (!cloudResult || !cloudResult.success)) {
+        showToast(`Error: ${cloudResult?.error || "Could not delete project from database or server."}`, "error");
+        return false;
+      }
+
+      // 3. Update local state and cache
       setProjects((prev) => {
         const next = prev.filter((p) => p.id !== id);
         saveLocalCachedProjects(next);
@@ -892,11 +912,11 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
         });
       }
 
-      showToast("Project deleted from database successfully!", "success");
+      showToast("Project deleted successfully!", "success");
       return true;
     } catch (err: any) {
       console.error("Failed to delete project:", err);
-      showToast(`Failed to delete project: ${err?.message || "Database error"}`, "error");
+      showToast(`Failed to delete project: ${err?.message || "Storage error"}`, "error");
       return false;
     }
   };
@@ -934,11 +954,6 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
 
       setProjects(updatedList);
       saveLocalCachedProjects(updatedList);
-
-      // Update order for each in Firestore
-      for (const p of updatedList) {
-        saveProjectToCloud(p).catch(() => {});
-      }
 
       // Update server batch
       await fetch("/api/projects/reorder/batch", {

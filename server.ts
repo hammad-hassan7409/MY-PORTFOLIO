@@ -119,7 +119,8 @@ async function syncStoreWithDatabase() {
       );
       saveStore();
       console.log(`[Server] Synchronized ${store.projects.length} projects with Firestore database.`);
-    } else if (store.projects && store.projects.length > 0) {
+    } else if (cloudProjects !== null && Array.isArray(cloudProjects) && store.projects && store.projects.length > 0) {
+      // Only seed if Firestore explicitly returned an empty array (not an error/quota rejection)
       await syncProjectsToFirestore(store.projects);
       console.log(`[Server] Seeded ${store.projects.length} projects from local store to Firestore.`);
     }
@@ -369,8 +370,10 @@ app.post("/api/projects", requireAdminAuth, async (req: Request, res: Response) 
   }
   saveStore();
 
-  // Persist to Firestore database
-  await saveProjectToFirestore(newProject);
+  // Asynchronously persist to Firestore database in background
+  saveProjectToFirestore(newProject).catch((err) => {
+    console.warn("[Server] Background Firestore save notice:", err);
+  });
 
   res.status(201).json({ success: true, project: newProject });
 });
@@ -380,7 +383,9 @@ app.post("/api/projects/sync", async (req: Request, res: Response) => {
   if (Array.isArray(syncProjects) && syncProjects.length > 0) {
     store.projects = syncProjects;
     saveStore();
-    await syncProjectsToFirestore(syncProjects);
+    syncProjectsToFirestore(syncProjects).catch((err) => {
+      console.warn("[Server] Background Firestore batch sync notice:", err);
+    });
     res.json({ success: true, count: syncProjects.length });
     return;
   }
@@ -406,8 +411,10 @@ app.put("/api/projects/:id", requireAdminAuth, async (req: Request, res: Respons
   recordServerActivity("project_updated", `Updated project ${updated.displayName}`, updated.description, { projectId: updated.id });
   saveStore();
 
-  // Persist update to Firestore database
-  await saveProjectToFirestore(updated);
+  // Asynchronously persist update to Firestore database in background
+  saveProjectToFirestore(updated).catch((err) => {
+    console.warn("[Server] Background Firestore update notice:", err);
+  });
 
   res.json({ success: true, project: updated });
 });
@@ -424,8 +431,10 @@ app.delete("/api/projects/:id", requireAdminAuth, async (req: Request, res: Resp
   recordServerActivity("project_deleted", `Deleted project ${existing.displayName}`);
   saveStore();
 
-  // Delete from Firestore database
-  await deleteProjectFromFirestore(req.params.id);
+  // Asynchronously delete from Firestore database in background
+  deleteProjectFromFirestore(req.params.id).catch((err) => {
+    console.warn("[Server] Background Firestore delete notice:", err);
+  });
 
   res.json({ success: true, message: "Project deleted successfully." });
 });
