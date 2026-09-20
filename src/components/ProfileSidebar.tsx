@@ -14,6 +14,7 @@ import {
   Briefcase,
   Sparkles,
   ExternalLink,
+  MessageCircle,
 } from "lucide-react";
 
 export const ProfileSidebar: React.FC = () => {
@@ -94,6 +95,19 @@ export const ProfileSidebar: React.FC = () => {
           <Github className="w-4 h-4" />
           <span>Follow on GitHub</span>
           <ExternalLink className="w-3 h-3 opacity-70" />
+        </a>
+
+        <a
+          id="profile-whatsapp-hire-btn"
+          href={`https://wa.me/${(profile.whatsapp || "+923004236885").replace(/[^0-9]/g, "")}?text=${encodeURIComponent("Hello Hammad, I saw your portfolio and would like to hire you for a project!")}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-md bg-[#25D366] hover:bg-[#20bd5a] text-white text-sm font-semibold transition-all cursor-pointer shadow-sm shadow-[#25D366]/20 group"
+          title="Chat directly with Hammad on WhatsApp (+92 300 4236885)"
+        >
+          <MessageCircle className="w-4 h-4 fill-white text-[#25D366] group-hover:scale-110 transition-transform" />
+          <span>Hire via WhatsApp</span>
+          <ExternalLink className="w-3 h-3 opacity-80" />
         </a>
       </div>
 

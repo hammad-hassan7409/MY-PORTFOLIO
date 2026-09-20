@@ -17,6 +17,7 @@ export const initialData: PortfolioData = {
     website: "https://hammadhassan.dev",
     twitter: "https://x.com/hammadhassan",
     resumeUrl: "#",
+    whatsapp: "+923004236885",
     company: "Freelance & Open Source Contributor",
     followersCount: 418,
     followingCount: 162,

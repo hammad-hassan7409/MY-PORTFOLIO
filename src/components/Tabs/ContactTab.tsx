@@ -13,6 +13,7 @@ import {
   Twitter,
   Copy,
   Check,
+  MessageCircle,
 } from "lucide-react";
 
 export const ContactTab: React.FC = () => {
@@ -222,6 +223,25 @@ export const ContactTab: React.FC = () => {
             </div>
 
             <div className="space-y-2 pt-1">
+              <a
+                id="contact-whatsapp-direct-link"
+                href={`https://wa.me/${(profile?.whatsapp || "+923004236885").replace(/[^0-9]/g, "")}?text=${encodeURIComponent("Hello Hammad, I saw your portfolio and would like to discuss hiring you for a project!")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between p-2.5 rounded bg-[#0d1117] hover:bg-[#25D366]/15 text-xs text-[#c9d1d9] hover:text-[#25D366] border border-[#30363d]/60 hover:border-[#25D366]/40 transition-colors group"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-5 h-5 rounded-full bg-[#25D366]/20 flex items-center justify-center text-[#25D366] group-hover:bg-[#25D366] group-hover:text-white transition-colors">
+                    <MessageCircle className="w-3 h-3 fill-current" />
+                  </div>
+                  <div>
+                    <span className="font-semibold text-[#f0f6fc] group-hover:text-[#25D366]">WhatsApp Direct Chat</span>
+                    <span className="text-[10px] text-[#8b949e] block">+92 300 4236885</span>
+                  </div>
+                </div>
+                <span className="text-[#25D366] text-[10px] font-medium">Chat Now →</span>
+              </a>
+
               <a
                 href={profile?.linkedin}
                 target="_blank"

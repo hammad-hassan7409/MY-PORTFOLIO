@@ -2204,6 +2204,17 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-1">
+              <label className="text-xs font-semibold text-[#c9d1d9]">WhatsApp Number (+CountryCode...)</label>
+              <input
+                type="text"
+                placeholder="+923004236885"
+                value={profileForm.whatsapp || ""}
+                onChange={(e) => setProfileForm({ ...profileForm, whatsapp: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded text-xs text-[#f0f6fc]"
+              />
+            </div>
+
+            <div className="space-y-1">
               <label className="text-xs font-semibold text-[#c9d1d9]">Website Link</label>
               <input
                 type="text"

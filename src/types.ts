@@ -14,6 +14,7 @@ export interface Profile {
   website: string;
   twitter?: string;
   resumeUrl?: string;
+  whatsapp?: string;
   company: string;
   followersCount: number;
   followingCount: number;
