@@ -168,15 +168,22 @@ export const AdminDashboard: React.FC = () => {
   // Profile Editor State
   const [profileForm, setProfileForm] = useState<Partial<Profile>>(profile || {});
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileSaveSuccess, setProfileSaveSuccess] = useState(false);
   const [isUploadingProjectImage, setIsUploadingProjectImage] = useState(false);
 
   // File input refs for device upload
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Update profileForm if profile changes
+  // Keep track of whether initial profile has been loaded into form
+  const hasInitializedProfileRef = useRef(false);
+
   React.useEffect(() => {
-    if (profile) setProfileForm(profile);
+    if (profile && !hasInitializedProfileRef.current) {
+      setProfileForm(profile);
+      hasInitializedProfileRef.current = true;
+    }
   }, [profile]);
 
   if (!isAdmin) {
@@ -439,9 +446,23 @@ export const AdminDashboard: React.FC = () => {
   };
 
   // Handle Profile Save
-  const handleSaveProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await updateProfile(profileForm);
+  const handleSaveProfile = async (e?: React.FormEvent | React.MouseEvent) => {
+    if (e && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
+    try {
+      setIsSavingProfile(true);
+      setProfileSaveSuccess(false);
+      const ok = await updateProfile(profileForm);
+      if (ok) {
+        setProfileSaveSuccess(true);
+        setTimeout(() => setProfileSaveSuccess(false), 4000);
+      }
+    } catch (err) {
+      console.error("Save profile error:", err);
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   // Curated project images helper
@@ -1989,7 +2010,7 @@ export const AdminDashboard: React.FC = () => {
       {/* 5. PROFILE EDITOR TAB (WITH DEVICE AVATAR UPLOAD) */}
       {/* ======================================================== */}
       {activeAdminTab === "profile" && (
-        <form onSubmit={handleSaveProfile} className="border border-[#30363d] rounded-lg p-6 bg-[#161b22] space-y-6 shadow-md">
+        <form noValidate onSubmit={handleSaveProfile} className="border border-[#30363d] rounded-lg p-6 bg-[#161b22] space-y-6 shadow-md">
           <div className="pb-4 border-b border-[#30363d] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-[#f0f6fc] flex items-center gap-2">
@@ -2001,13 +2022,45 @@ export const AdminDashboard: React.FC = () => {
               </p>
             </div>
             <button
+              id="admin-save-profile-top-btn"
               type="submit"
-              className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-[#238636] hover:bg-[#2ea043] rounded shadow-sm transition-colors cursor-pointer self-start sm:self-auto"
+              onClick={handleSaveProfile}
+              disabled={isSavingProfile}
+              className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white rounded shadow-sm transition-all cursor-pointer self-start sm:self-auto ${
+                profileSaveSuccess
+                  ? "bg-emerald-600 hover:bg-emerald-500"
+                  : isSavingProfile
+                  ? "bg-[#238636]/70 cursor-not-allowed"
+                  : "bg-[#238636] hover:bg-[#2ea043]"
+              }`}
             >
-              <Save className="w-4 h-4" />
-              <span>Save Profile Changes</span>
+              {isSavingProfile ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving Changes...</span>
+                </>
+              ) : profileSaveSuccess ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-white" />
+                  <span>Profile Saved!</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>Save Profile Changes</span>
+                </>
+              )}
             </button>
           </div>
+
+          {profileSaveSuccess && (
+            <div className="p-3 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in duration-200">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="font-medium">
+                Profile and avatar changes saved successfully and synced across all pages!
+              </span>
+            </div>
+          )}
 
           {/* DEDICATED PROFILE AVATAR UPLOAD ZONE */}
           <div className="p-5 rounded-lg bg-[#0d1117] border border-[#388bfd]/30 space-y-4">
@@ -2312,11 +2365,34 @@ export const AdminDashboard: React.FC = () => {
 
           <div className="pt-2 flex justify-end">
             <button
+              id="admin-save-profile-bottom-btn"
               type="submit"
-              className="flex items-center gap-1.5 px-6 py-2.5 text-xs font-bold text-white bg-[#238636] hover:bg-[#2ea043] rounded shadow-md transition-colors cursor-pointer"
+              onClick={handleSaveProfile}
+              disabled={isSavingProfile}
+              className={`flex items-center gap-1.5 px-6 py-2.5 text-xs font-bold text-white rounded shadow-md transition-all cursor-pointer ${
+                profileSaveSuccess
+                  ? "bg-emerald-600 hover:bg-emerald-500"
+                  : isSavingProfile
+                  ? "bg-[#238636]/70 cursor-not-allowed"
+                  : "bg-[#238636] hover:bg-[#2ea043]"
+              }`}
             >
-              <Save className="w-4 h-4" />
-              <span>Save Profile Changes</span>
+              {isSavingProfile ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Saving Profile...</span>
+                </>
+              ) : profileSaveSuccess ? (
+                <>
+                  <Check className="w-4 h-4 text-white" />
+                  <span>Profile Saved!</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>Save Profile Changes</span>
+                </>
+              )}
             </button>
           </div>
         </form>

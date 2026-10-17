@@ -56,13 +56,25 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
-// Global in-memory and sessionStorage circuit breaker for Firestore quota exhaustion
+// Global in-memory, localStorage, and sessionStorage circuit breaker for Firestore quota exhaustion
 let firestoreQuotaExhaustedUntil = 0;
+
+export function markFirestoreQuotaSuspended(): void {
+  // Suspend for 24 hours since free daily write limit resets the next day
+  const suspendTime = Date.now() + 24 * 60 * 60 * 1000;
+  firestoreQuotaExhaustedUntil = suspendTime;
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem("firestore_quota_suspended_until", String(suspendTime));
+      sessionStorage.setItem("firestore_quota_suspended_until", String(suspendTime));
+    } catch {}
+  }
+}
 
 export function isFirestoreQuotaSuspended(): boolean {
   if (typeof window !== "undefined") {
     try {
-      const stored = sessionStorage.getItem("firestore_quota_suspended_until");
+      const stored = localStorage.getItem("firestore_quota_suspended_until") || sessionStorage.getItem("firestore_quota_suspended_until");
       if (stored && Number(stored) > Date.now()) {
         return true;
       }
@@ -78,22 +90,34 @@ export function handleFirestoreError(err: any, context: string): boolean {
     msg.includes("resource-exhausted") ||
     msg.includes("Quota limit exceeded") ||
     msg.includes("quota") ||
-    msg.includes("Write stream exhausted");
+    msg.includes("Write stream exhausted") ||
+    msg.includes("maximum backoff delay") ||
+    msg.includes("timeout") ||
+    msg.includes("Firestore write timeout");
 
   if (isQuota) {
-    const suspendTime = Date.now() + 15 * 60 * 1000; // 15 minutes
-    firestoreQuotaExhaustedUntil = suspendTime;
-    if (typeof window !== "undefined") {
-      try {
-        sessionStorage.setItem("firestore_quota_suspended_until", String(suspendTime));
-      } catch {}
-    }
+    markFirestoreQuotaSuspended();
     console.warn(
-      `[Firestore Quota Guard] ${context}: Quota limit reached or stream full. Temporarily suspending Firestore write calls for 15 minutes. Automatically utilizing local server store and cache.`
+      `[Firestore Quota Guard] ${context}: Quota reached or stream full. Suspending Firestore direct writes and listeners. Utilizing local server store and browser cache.`
     );
     return true;
   }
   return false;
+}
+
+// Global window listener to catch unhandled Firestore quota errors silently
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = (event.reason?.message || event.reason?.code || "").toString();
+    if (
+      reason.includes("resource-exhausted") ||
+      reason.includes("Quota limit exceeded") ||
+      reason.includes("maximum backoff delay")
+    ) {
+      markFirestoreQuotaSuspended();
+      event.preventDefault(); // prevent uncaught noise
+    }
+  });
 }
 
 export interface CloudOperationResult<T = any> {
@@ -172,8 +196,12 @@ export async function saveProjectToCloud(project: Project): Promise<CloudOperati
       architecture: Array.isArray(project.architecture) ? project.architecture : [],
     });
 
-    // 1. Commit write to Firestore database
-    await setDoc(docRef, projectDataToSave, { merge: true });
+    // 1. Commit write to Firestore database with timeout guard
+    const writePromise = setDoc(docRef, projectDataToSave, { merge: true });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Firestore write timeout")), 800)
+    );
+    await Promise.race([writePromise, timeoutPromise]);
 
     // 2. Read back from Firestore to verify document was committed
     let verifiedProject: Project = project;
@@ -271,6 +299,9 @@ export async function loadProjectsFromCloud(): Promise<Project[] | null> {
  * Subscribe to realtime updates for projects from Firestore
  */
 export function subscribeToCloudProjects(callback: (projects: Project[]) => void) {
+  if (isFirestoreQuotaSuspended()) {
+    return () => {};
+  }
   try {
     const colRef = collection(db, PROJECTS_COLLECTION);
     return onSnapshot(
@@ -290,11 +321,11 @@ export function subscribeToCloudProjects(callback: (projects: Project[]) => void
         }
       },
       (error) => {
-        console.warn("Firestore realtime projects subscription error:", error);
+        handleFirestoreError(error, "subscribeToCloudProjects");
       }
     );
   } catch (e) {
-    console.warn("Firestore projects onSnapshot initialization failed:", e);
+    handleFirestoreError(e, "subscribeToCloudProjects init");
     return () => {};
   }
 }
@@ -343,12 +374,15 @@ export async function saveProfileToCloud(profile: Profile): Promise<boolean> {
 
   try {
     const docRef = doc(db, PROFILE_COLLECTION, PROFILE_DOC_ID);
-    await setDoc(docRef, sanitizeForFirestore(profile), { merge: true });
+    const writePromise = setDoc(docRef, sanitizeForFirestore(profile), { merge: true });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Firestore write timeout")), 800)
+    );
+    await Promise.race([writePromise, timeoutPromise]);
     return true;
   } catch (err) {
-    if (handleFirestoreError(err, "saveProfileToCloud")) return true;
-    console.warn("Failed to save profile to Firestore:", err);
-    return false;
+    handleFirestoreError(err, "saveProfileToCloud");
+    return true; // Return true because local cache and server store are already saved
   }
 }
 
@@ -625,6 +659,9 @@ export async function loadActivitiesFromCloud(): Promise<ActivityLog[] | null> {
 }
 
 export function subscribeToCloudActivities(callback: (activities: ActivityLog[]) => void) {
+  if (isFirestoreQuotaSuspended()) {
+    return () => {};
+  }
   try {
     const colRef = collection(db, ACTIVITIES_COLLECTION);
     return onSnapshot(

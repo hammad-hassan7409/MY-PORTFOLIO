@@ -3,70 +3,12 @@ import { usePortfolio } from "../../context/PortfolioContext";
 import { PinnedProjects } from "../PinnedProjects";
 import { ContributionGraph } from "../ContributionGraph";
 import {
-  Terminal,
   BookOpen,
-  GitCommit,
-  GitPullRequest,
-  CheckCircle2,
-  Sparkles,
-  ArrowRight,
-  Code2,
   Cpu,
-  Layers,
-  Award,
-  FolderGit2,
-  Activity,
 } from "lucide-react";
-import { ActivityLog } from "../../types";
-
-function formatRelativeTime(dateStr: string): string {
-  try {
-    const d = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    if (isNaN(diffMs) || diffMs < 0) return "Just now";
-
-    const diffSec = Math.floor(diffMs / 1000);
-    const diffMin = Math.floor(diffSec / 60);
-    const diffHour = Math.floor(diffMin / 60);
-    const diffDay = Math.floor(diffHour / 24);
-
-    if (diffMin < 1) return "Just now";
-    if (diffMin < 60) return `${diffMin}m ago`;
-    if (diffHour < 24) return `${diffHour}h ago`;
-    if (diffDay === 1) return "Yesterday";
-    if (diffDay < 7) return `${diffDay}d ago`;
-    if (diffDay < 30) return `${Math.floor(diffDay / 7)}w ago`;
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  } catch {
-    return "Recently";
-  }
-}
-
-function getActivityIcon(type: string) {
-  switch (type) {
-    case "pr_merged":
-    case "pr_opened":
-      return <GitPullRequest className="w-4 h-4 text-[#39d353] shrink-0 mt-0.5" />;
-    case "project_created":
-    case "project_updated":
-      return <FolderGit2 className="w-4 h-4 text-[#58a6ff] shrink-0 mt-0.5" />;
-    case "achievement_unlocked":
-      return <Award className="w-4 h-4 text-[#d29922] shrink-0 mt-0.5" />;
-    case "skill_updated":
-      return <Code2 className="w-4 h-4 text-[#bc8cff] shrink-0 mt-0.5" />;
-    case "experience_updated":
-      return <Layers className="w-4 h-4 text-[#58a6ff] shrink-0 mt-0.5" />;
-    case "commit_pushed":
-    default:
-      return <GitCommit className="w-4 h-4 text-[#8957e5] shrink-0 mt-0.5" />;
-  }
-}
 
 export const OverviewTab: React.FC = () => {
-  const { profile, projects, skills, activities, setActiveTab } = usePortfolio();
-
-  const recentActivities = (activities || []).slice(-6).reverse();
+  const { profile, projects, skills, setActiveTab } = usePortfolio();
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
@@ -170,59 +112,9 @@ export const OverviewTab: React.FC = () => {
       {/* Pinned Repositories Section */}
       <PinnedProjects />
 
-      {/* Contribution Heatmap */}
+      {/* Contribution Heatmap & Streak */}
       <ContributionGraph />
-
-      {/* Recent Activity Timeline */}
-      <div className="border border-[#30363d] rounded-lg p-5 bg-[#161b22] space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-[#58a6ff]" />
-            <h2 className="text-sm font-semibold text-[#f0f6fc]">
-              Recent Web Developer Activity & Events
-            </h2>
-          </div>
-          <span className="flex items-center gap-1.5 text-xs text-[#39d353] font-mono">
-            <span className="w-2 h-2 rounded-full bg-[#39d353] animate-pulse" />
-            Live Sync
-          </span>
-        </div>
-
-        <div className="space-y-3 font-mono text-xs">
-          {recentActivities.length === 0 ? (
-            <div className="text-center py-6 text-[#8b949e] font-sans text-xs">
-              No recent activities recorded yet.
-            </div>
-          ) : (
-            recentActivities.map((act) => (
-              <div
-                key={act.id}
-                className="flex items-start gap-3 p-3 rounded-md bg-[#0d1117] border border-[#30363d]/50 hover:border-[#30363d] transition-colors"
-              >
-                {getActivityIcon(act.type)}
-                <div className="flex-1 min-w-0">
-                  <div className="text-[#f0f6fc] font-medium break-words">
-                    {act.title}
-                    {act.repo && (
-                      <span className="ml-1 text-[#58a6ff] text-[11px] font-normal">
-                        in {act.repo.startsWith("hammadhassan/") ? act.repo : `hammadhassan/${act.repo}`}
-                      </span>
-                    )}
-                  </div>
-                  {act.description && (
-                    <div className="text-[11px] text-[#8b949e] mt-0.5 line-clamp-2">
-                      "{act.description}"
-                    </div>
-                  )}
-                </div>
-                <span className="text-[10px] text-[#8b949e] shrink-0 whitespace-nowrap pt-0.5">
-                  {formatRelativeTime(act.timestamp)}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
     </div>
   );
 };
+

@@ -149,10 +149,11 @@ export const Header: React.FC = () => {
               <button
                 id="admin-login-modal-open"
                 onClick={() => setIsAdminLoginOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#8b949e] hover:text-[#f0f6fc] bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] rounded-md transition-colors"
+                className="p-2 text-[#8b949e] hover:text-[#58a6ff] hover:bg-[#30363d] bg-[#21262d] border border-[#30363d] hover:border-[#58a6ff]/50 rounded-md transition-colors cursor-pointer flex items-center justify-center"
+                title="Admin Login"
+                aria-label="Admin Login"
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-[#8b949e]" />
-                <span className="hidden sm:inline">Admin Login</span>
+                <ShieldCheck className="w-4 h-4" />
               </button>
             )}
 
@@ -286,12 +287,11 @@ export const Header: React.FC = () => {
                 setIsAdminLoginOpen(true);
                 setMobileMenuOpen(false);
               }}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium text-[#8b949e] hover:bg-[#21262d]/50 hover:text-[#f0f6fc]"
+              className="p-2 text-[#8b949e] hover:text-[#58a6ff] hover:bg-[#30363d] bg-[#21262d] border border-[#30363d] rounded-md transition-colors flex items-center justify-center cursor-pointer"
+              title="Admin Login"
+              aria-label="Admin Login"
             >
-              <div className="flex items-center gap-3">
-                <ShieldCheck className="w-4 h-4 text-[#8b949e]" />
-                <span>Admin Login</span>
-              </div>
+              <ShieldCheck className="w-4 h-4" />
             </button>
           )}
         </div>

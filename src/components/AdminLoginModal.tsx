@@ -74,11 +74,12 @@ export const AdminLoginModal: React.FC = () => {
             </label>
             <input
               id="admin-email-input"
-              type="email"
+              type="text"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="hammadhassan7409@gmail.com"
+              placeholder="admin or email"
+              autoComplete="username"
               className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] focus:border-[#58a6ff] rounded-md text-sm text-[#f0f6fc] placeholder-[#8b949e] focus:outline-none transition-colors"
             />
           </div>

@@ -6,23 +6,27 @@ import { Pin, FolderGit2, ArrowRight } from "lucide-react";
 export const PinnedProjects: React.FC = () => {
   const { projects, setActiveTab } = usePortfolio();
 
-  const pinned = projects.filter((p) => p.isPinned);
-  const displayProjects = pinned.length > 0 ? pinned : projects.slice(0, 6);
+  // Display every project on the overview as requested, ordered with pinned projects first
+  const displayProjects = [...projects].sort((a, b) => {
+    if (a.isPinned && !b.isPinned) return -1;
+    if (!a.isPinned && b.isPinned) return 1;
+    return (a.order || 0) - (b.order || 0);
+  });
 
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Pin className="w-4 h-4 text-amber-400 fill-amber-400/20" />
+          <FolderGit2 className="w-4 h-4 text-[#58a6ff]" />
           <h2 className="text-sm font-semibold text-[#f0f6fc]">
-            Pinned Repositories & Key Works
+            All Repositories & Key Works ({displayProjects.length})
           </h2>
         </div>
         <button
           onClick={() => setActiveTab("projects")}
           className="text-xs text-[#58a6ff] hover:underline flex items-center gap-1 font-medium cursor-pointer"
         >
-          <span>View all ({projects.length})</span>
+          <span>Projects Explorer ({projects.length})</span>
           <ArrowRight className="w-3 h-3" />
         </button>
       </div>
