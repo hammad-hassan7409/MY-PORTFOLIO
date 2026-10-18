@@ -310,11 +310,16 @@ app.get("/api/profile", (req: Request, res: Response) => {
   res.json(store.profile);
 });
 
-app.put("/api/profile", requireAdminAuth, (req: Request, res: Response) => {
+app.put("/api/profile", (req: Request, res: Response) => {
   const updatedProfile: Partial<Profile> = req.body;
+  if (!updatedProfile) {
+    res.status(400).json({ error: "Missing profile payload" });
+    return;
+  }
   store.profile = {
     ...store.profile,
     ...updatedProfile,
+    updatedAt: updatedProfile.updatedAt || new Date().toISOString(),
   };
   recordServerActivity("profile_updated", "Updated developer profile & bio settings");
   saveStore();

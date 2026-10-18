@@ -56,8 +56,6 @@ export const ContributionGraph: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-[#8b949e]">
-          <span>Activity settings</span>
-          <span>•</span>
           <span className="font-mono text-[#58a6ff]">{contributions.year}</span>
         </div>
       </div>

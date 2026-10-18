@@ -22,6 +22,8 @@ export interface Profile {
   totalContributionsYear: number;
   yearsOfExperience: number;
   currentFocus: string;
+  updatedAt?: string;
+  contactEmail?: string;
 }
 
 export interface Project {

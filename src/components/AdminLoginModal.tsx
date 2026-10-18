@@ -78,7 +78,7 @@ export const AdminLoginModal: React.FC = () => {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin or email"
+              placeholder="Enter email or username"
               autoComplete="username"
               className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] focus:border-[#58a6ff] rounded-md text-sm text-[#f0f6fc] placeholder-[#8b949e] focus:outline-none transition-colors"
             />

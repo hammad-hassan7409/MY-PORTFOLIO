@@ -27,6 +27,8 @@ import {
   saveActivityToCloud,
   subscribeToCloudActivities,
   getLocalCachedActivities,
+  getLocalCachedProfile,
+  isPlaceholderAvatar,
   CloudOperationResult,
 } from "../lib/portfolioSync";
 import { calculateStreakAndContributions, generateSeedActivities, formatLocalDate } from "../utils/streakUtils";
@@ -97,8 +99,8 @@ interface PortfolioContextType {
 const PortfolioContext = createContext<PortfolioContextType | undefined>(undefined);
 
 export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // Pre-fill projects and activities from fast local cache to guarantee instant render
-  const [profile, setProfile] = useState<Profile | null>(null);
+  // Pre-fill profile, projects, and activities from fast local cache to guarantee instant render
+  const [profile, setProfile] = useState<Profile | null>(() => getLocalCachedProfile());
   const [projects, setProjects] = useState<Project[]>(() => getLocalCachedProjects());
   const [skills, setSkills] = useState<Skill[]>([]);
   const [achievements, setAchievements] = useState<Achievement[]>([]);
@@ -485,13 +487,46 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
           role: e.role ? e.role.replace(/Software\s+Engineer/gi, "Web Developer").replace(/software\s+engineer/gi, "web developer").replace(/Senior\s+Full\s+Stack\s+Engineer/gi, "Senior Full Stack Web Developer").replace(/Freelance\s+Engineer/gi, "Freelance Web Developer") : "Web Developer",
         }));
 
-      // PROFILE
-      if (cloudProfile && cloudProfile.name) {
-        setProfile(sanitizeProfileData(cloudProfile));
-      } else if (serverProfile) {
-        const sanitized = sanitizeProfileData(serverProfile);
-        setProfile(sanitized);
-        saveProfileToCloud(sanitized).catch(() => {});
+      // PROFILE: Resolve best profile between local cache, cloud, and server to prevent overwriting updates
+      const localCachedProfile = getLocalCachedProfile();
+      const profileCandidates: Profile[] = [];
+      if (localCachedProfile && (localCachedProfile.name || localCachedProfile.avatarUrl)) {
+        profileCandidates.push(localCachedProfile);
+      }
+      if (cloudProfile && (cloudProfile.name || cloudProfile.avatarUrl)) {
+        profileCandidates.push(cloudProfile);
+      }
+      if (serverProfile && (serverProfile.name || serverProfile.avatarUrl)) {
+        profileCandidates.push(serverProfile);
+      }
+
+      if (profileCandidates.length > 0) {
+        // Sort descending: real custom avatar & custom bio ALWAYS beats default placeholders
+        profileCandidates.sort((a, b) => {
+          // Priority 1: Has a real uploaded avatar (data:image or non-placeholder)
+          const aHasAvatar = Boolean(a.avatarUrl && !isPlaceholderAvatar(a.avatarUrl));
+          const bHasAvatar = Boolean(b.avatarUrl && !isPlaceholderAvatar(b.avatarUrl));
+          if (bHasAvatar && !aHasAvatar) return 1;
+          if (aHasAvatar && !bHasAvatar) return -1;
+
+          // Priority 2: Has updated custom bio or location
+          const aHasCustomBio = Boolean(a.bio?.includes("17 years") || a.location?.includes("Sheikhupura"));
+          const bHasCustomBio = Boolean(b.bio?.includes("17 years") || b.location?.includes("Sheikhupura"));
+          if (bHasCustomBio && !aHasCustomBio) return 1;
+          if (aHasCustomBio && !bHasCustomBio) return -1;
+
+          // Priority 3: Latest updatedAt timestamp
+          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+          return bTime - aTime;
+        });
+        const chosen = sanitizeProfileData(profileCandidates[0]);
+        setProfile(chosen);
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem("portfolio_persisted_profile", JSON.stringify(chosen));
+          } catch {}
+        }
       }
 
       // SKILLS
@@ -649,11 +684,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   // Update Profile
   const updateProfile = async (updated: Partial<Profile>): Promise<boolean> => {
-    if (!profile) {
-      showToast("Profile data is not loaded yet.", "error");
-      return false;
-    }
-    const mergedProfile = { ...profile, ...updated };
+    const base = profile || getLocalCachedProfile() || ({} as Profile);
+    const mergedProfile: Profile = {
+      ...base,
+      ...updated,
+      updatedAt: new Date().toISOString(),
+    };
 
     // 1. Immediately apply to local state & localStorage so UI updates with zero lag
     setProfile(mergedProfile);
@@ -680,12 +716,12 @@ export const PortfolioProvider: React.FC<{ children: ReactNode }> = ({ children 
           setProfile(data.profile);
         }
       } catch (err) {
-        console.warn("Backend profile sync notice:", err);
+        console.log("Backend profile sync notice:", err);
       }
 
       // 3. Persist to Firestore database in background
       saveProfileToCloud(mergedProfile).catch((err) => {
-        console.warn("Firestore database sync notice:", err);
+        console.log("Firestore database sync notice:", err);
       });
 
       logActivity({

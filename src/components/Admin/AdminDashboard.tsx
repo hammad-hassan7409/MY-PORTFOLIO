@@ -180,9 +180,15 @@ export const AdminDashboard: React.FC = () => {
   const hasInitializedProfileRef = useRef(false);
 
   React.useEffect(() => {
-    if (profile && !hasInitializedProfileRef.current) {
-      setProfileForm(profile);
-      hasInitializedProfileRef.current = true;
+    if (profile) {
+      setProfileForm((prev) => {
+        // If form hasn't been touched or matches previous profile, sync with latest profile
+        if (!hasInitializedProfileRef.current) {
+          hasInitializedProfileRef.current = true;
+          return profile;
+        }
+        return { ...prev, ...profile };
+      });
     }
   }, [profile]);
 

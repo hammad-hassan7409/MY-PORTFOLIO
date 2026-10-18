@@ -14,6 +14,24 @@
     <meta name="twitter:title" content="MY PORTFOLIO | Premium Web Developer Portfolio" />
     <meta name="twitter:description" content="A premium, GitHub-inspired interactive developer portfolio and cloud management system by Hammad Hassan." />
     <meta name="theme-color" content="#0d1117" />
+    <script>
+      // Gracefully silence harmless Vite dev HMR WebSocket errors in sandbox preview iframe
+      window.addEventListener('unhandledrejection', function(e) {
+        if (!e) return;
+        var r = e.reason;
+        var msg = (r && (r.message || r.toString())) || '';
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('websocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+          e.preventDefault();
+        }
+      });
+      window.addEventListener('error', function(e) {
+        if (!e) return;
+        var msg = (e.message || '') + '';
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('websocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+          e.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

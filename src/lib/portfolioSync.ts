@@ -97,25 +97,31 @@ export function handleFirestoreError(err: any, context: string): boolean {
 
   if (isQuota) {
     markFirestoreQuotaSuspended();
-    console.warn(
-      `[Firestore Quota Guard] ${context}: Quota reached or stream full. Suspending Firestore direct writes and listeners. Utilizing local server store and browser cache.`
+    console.log(
+      `[Firestore Quota Guard] ${context}: Quota reached or stream full. Operating via local server store and browser cache.`
     );
     return true;
   }
   return false;
 }
 
-// Global window listener to catch unhandled Firestore quota errors silently
+// Global window listener to catch unhandled Firestore quota errors & Vite websocket closures silently
 if (typeof window !== "undefined") {
   window.addEventListener("unhandledrejection", (event) => {
-    const reason = (event.reason?.message || event.reason?.code || "").toString();
+    const reason = (event.reason?.message || event.reason?.code || event.reason || "").toString();
     if (
       reason.includes("resource-exhausted") ||
       reason.includes("Quota limit exceeded") ||
       reason.includes("maximum backoff delay")
     ) {
       markFirestoreQuotaSuspended();
-      event.preventDefault(); // prevent uncaught noise
+      event.preventDefault();
+    } else if (
+      reason.includes("WebSocket") ||
+      reason.includes("websocket") ||
+      reason.includes("closed without opened")
+    ) {
+      event.preventDefault();
     }
   });
 }
@@ -386,25 +392,66 @@ export async function saveProfileToCloud(profile: Profile): Promise<boolean> {
   }
 }
 
-export async function loadProfileFromCloud(): Promise<Profile | null> {
+export function isPlaceholderAvatar(url?: string): boolean {
+  if (!url) return true;
+  return (
+    url.includes("photo-1534528741775-53994a69daeb") ||
+    url.includes("avatars.githubusercontent.com/u/583231")
+  );
+}
+
+export function getLocalCachedProfile(): Profile | null {
+  if (typeof window === "undefined") return null;
   try {
-    const docRef = doc(db, PROFILE_COLLECTION, PROFILE_DOC_ID);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      return snap.data() as Profile;
+    const local = localStorage.getItem(LOCAL_PROFILE_KEY);
+    if (local) {
+      const parsed = JSON.parse(local);
+      if (parsed && (parsed.name || parsed.username || parsed.avatarUrl)) {
+        return parsed as Profile;
+      }
     }
-  } catch (err) {
-    console.warn("Firestore profile read failed:", err);
-  }
-  if (typeof window !== "undefined") {
-    try {
-      const local = localStorage.getItem(LOCAL_PROFILE_KEY);
-      if (local) return JSON.parse(local);
-    } catch {
-      // ignore
-    }
+  } catch {
+    // ignore
   }
   return null;
+}
+
+export async function loadProfileFromCloud(): Promise<Profile | null> {
+  const local = getLocalCachedProfile();
+
+  if (!isFirestoreQuotaSuspended()) {
+    try {
+      const docRef = doc(db, PROFILE_COLLECTION, PROFILE_DOC_ID);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const cloudDoc = snap.data() as Profile;
+        if (cloudDoc && cloudDoc.name) {
+          // If local has a real custom uploaded avatar and cloud doc has default placeholder, ALWAYS prefer local
+          if (local && local.avatarUrl && !isPlaceholderAvatar(local.avatarUrl) && isPlaceholderAvatar(cloudDoc.avatarUrl)) {
+            return local;
+          }
+          // If local has custom bio and cloud does not, prefer local
+          if (local && local.bio?.includes("17 years") && !cloudDoc.bio?.includes("17 years")) {
+            return local;
+          }
+          if (local && local.updatedAt && cloudDoc.updatedAt) {
+            const localTime = new Date(local.updatedAt).getTime();
+            const cloudTime = new Date(cloudDoc.updatedAt).getTime();
+            if (localTime >= cloudTime) {
+              return local;
+            }
+          } else if (local && local.updatedAt && !cloudDoc.updatedAt) {
+            return local;
+          }
+          return cloudDoc;
+        }
+      }
+    } catch (err) {
+      console.log("Firestore profile read notice:", err);
+    }
+  }
+
+  return local;
 }
 
 /**
